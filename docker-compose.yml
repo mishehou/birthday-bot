@@ -1,0 +1,48 @@
+version: "3.9"
+
+networks:
+  whatsapp-net:
+    name: whatsapp-net
+
+services:
+
+  # ── WhatsApp linked-device gateway (shared with sefirat-haomer-bot) ─────────
+  waha:
+    image: devlikeapro/waha
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./waha-data:/app/.sessions
+    environment:
+      WHATSAPP_DEFAULT_ENGINE:        NOWEB
+      WHATSAPP_RESTART_ALL_SESSIONS:  "true"
+      WHATSAPP_API_KEY:               birthday-bot-key
+    networks:
+      - whatsapp-net
+
+  # ── Birthday web app ────────────────────────────────────────────────────────
+  birthday-bot:
+    build: .
+    container_name: birthday-bot
+    restart: unless-stopped
+    depends_on:
+      - waha
+    ports:
+      - "5050:5000"
+    volumes:
+      - ./data:/data
+    environment:
+      WAHA_URL:              http://waha:3000
+      WAHA_API_KEY:          birthday-bot-key
+      NOTIFICATION_HOUR:     ${NOTIFICATION_HOUR:-9}
+      NOTIFICATION_MINUTE:   ${NOTIFICATION_MINUTE:-0}
+      TIMEZONE:              ${TIMEZONE:-Asia/Jerusalem}
+      SECRET_KEY:            ${SECRET_KEY:-change-me}
+      DATABASE_PATH:         /data/birthdays.db
+      CONTACTS_FILE:         /data/contacts.json
+      GOOGLE_REDIRECT_URI:   ${GOOGLE_REDIRECT_URI:-http://localhost:5000/admin/google-callback}
+      OAUTHLIB_INSECURE_TRANSPORT: "1"
+    networks:
+      - whatsapp-net

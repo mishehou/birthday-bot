@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Birthday Bot</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    body { background: #f8f9fa; }
+    .card { border-radius: 12px; }
+    .birthday-today { background: #fff3cd; border-left: 4px solid #ffc107; }
+    .upcoming-soon { background: #d1ecf1; border-left: 4px solid #17a2b8; }
+    .month-badge {
+      font-size: 0.75rem; font-weight: 600;
+      padding: 2px 8px; border-radius: 20px;
+      background: #e9ecef; color: #495057;
+    }
+    option.variable-day { color: #6c757d; font-style: italic; }
+  </style>
+</head>
+<body>
+<nav class="navbar navbar-dark bg-dark mb-4">
+  <div class="container">
+    <span class="navbar-brand"><i class="bi bi-cake2"></i> Hebrew Birthday Bot</span>
+    <div class="d-flex align-items-center gap-3">
+      <span class="text-light small">Today: {{ today_str }}</span>
+      <a href="/admin/contacts" class="btn btn-sm btn-outline-light me-1">
+        <i class="bi bi-person-lines-fill"></i> Contacts
+      </a>
+      <a href="/whatsapp-setup" class="btn btn-sm btn-outline-light">
+        <i class="bi bi-whatsapp"></i> WhatsApp
+      </a>
+    </div>
+  </div>
+</nav>
+
+<div class="container pb-5">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  <!-- Today's Birthdays -->
+  {% if todays_birthdays %}
+  <div class="card shadow-sm mb-4 birthday-today">
+    <div class="card-body">
+      <h5 class="card-title"><i class="bi bi-balloon-heart-fill text-warning"></i> Today's Birthdays!</h5>
+      {% for p in todays_birthdays %}
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <i class="bi bi-gift-fill text-danger"></i>
+          <strong>{{ p.name }}</strong>
+          <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
+          {% if p.notes %}<small class="text-muted">— {{ p.notes }}</small>{% endif %}
+          <button class="btn btn-sm btn-warning ms-auto" onclick="checkToday(event)"
+                  title="Send WhatsApp notification now">
+            <i class="bi bi-whatsapp"></i> Send now
+          </button>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="row g-4">
+
+    <!-- Add Person -->
+    <div class="col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+          <i class="bi bi-person-plus-fill"></i> Add Person
+        </div>
+        <div class="card-body">
+          <form method="post" action="/add" id="addForm">
+            <div class="mb-3">
+              <label class="form-label">Name <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" name="name"
+                     placeholder="e.g. Avraham Cohen" required>
+            </div>
+
+            <!-- Month first, then day (day options depend on month) -->
+            <div class="mb-2">
+              <label class="form-label">Hebrew Month <span class="text-danger">*</span></label>
+              <select class="form-select" name="hebrew_month" id="addMonth"
+                      onchange="buildDayOptions('addMonth','addDay')" required>
+                <option value="">— select month —</option>
+                {% for num, name in hebrew_months.items() %}
+                  <option value="{{ num }}">{{ name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label">Day <span class="text-danger">*</span></label>
+              <select class="form-select" name="hebrew_day" id="addDay" disabled required>
+                <option value="">— select month first —</option>
+              </select>
+              <div id="addDayNote" class="form-text text-warning d-none">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                Days marked <em>*</em> exist only in some year types (e.g. complete years or leap years).
+              </div>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label">Notes <small class="text-muted">(optional)</small></label>
+              <input type="text" class="form-control" name="notes"
+                     placeholder="e.g. send flowers">
+            </div>
+            <button type="submit" class="btn btn-primary w-100">
+              <i class="bi bi-plus-circle"></i> Add
+            </button>
+          </form>
+
+          <div class="mt-3 p-2 bg-light rounded small text-muted">
+            <i class="bi bi-info-circle"></i>
+            <strong>Adar note:</strong> If born in a non-leap year choose <em>Adar</em>.
+            The bot will automatically celebrate on Adar II during leap years.
+          </div>
+        </div>
+      </div>
+
+      <!-- Upcoming (next 30 days) -->
+      {% if upcoming %}
+      <div class="card shadow-sm mt-4">
+        <div class="card-header bg-info text-white">
+          <i class="bi bi-calendar-event"></i> Upcoming (next 30 days)
+        </div>
+        <ul class="list-group list-group-flush">
+          {% for p in upcoming %}
+          <li class="list-group-item upcoming-soon d-flex justify-content-between align-items-start">
+            <div>
+              <strong>{{ p.name }}</strong>
+              <div class="small text-muted">
+                {{ p.next_hebrew_date }} · {{ p.next_gregorian }}
+              </div>
+            </div>
+            <span class="badge bg-info text-dark">{{ p.days_until }}d</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- People List -->
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-people-fill"></i> All People ({{ people | length }})</span>
+          <button class="btn btn-sm btn-light" id="checkBtn" onclick="checkToday(event)">
+            <i class="bi bi-send-check"></i> Test today's check
+          </button>
+        </div>
+        {% if people %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th>Name</th>
+                <th>Hebrew Birthday</th>
+                <th>Notes</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in people %}
+              <tr>
+                <td><strong>{{ p.name }}</strong></td>
+                <td>
+                  <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
+                </td>
+                <td class="text-muted small">{{ p.notes or '' }}</td>
+                <td class="text-end">
+                  <a href="/edit/{{ p.id }}" class="btn btn-sm btn-outline-secondary me-1">
+                    <i class="bi bi-pencil"></i>
+                  </a>
+                  <form method="post" action="/delete/{{ p.id }}" class="d-inline"
+                        onsubmit="return confirm('Delete {{ p.name }}?')">
+                    <button class="btn btn-sm btn-outline-danger">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div class="card-body text-center text-muted py-5">
+          <i class="bi bi-person-x" style="font-size:2rem"></i>
+          <p class="mt-2">No people added yet. Add someone above!</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+  </div><!-- /row -->
+</div><!-- /container -->
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// Authoritative day counts per Hebrew month (pyluach numbering: Nisan=1, Tishrei=7)
+// variable: true  → the last day of that month does not exist in every year
+const MONTH_DAYS = {{ month_days_info | tojson }};
+
+/**
+ * Rebuild the day <select> for the given month.
+ * @param {string} monthSelectId  id of the month <select>
+ * @param {string} daySelectId    id of the day <select>
+ * @param {number} [preselect]    day to pre-select (for edit form)
+ */
+function buildDayOptions(monthSelectId, daySelectId, preselect) {
+  const monthEl = document.getElementById(monthSelectId);
+  const dayEl   = document.getElementById(daySelectId);
+  const noteEl  = document.getElementById(monthSelectId.replace('Month', 'DayNote')
+                                           || daySelectId + 'Note');
+  const month = parseInt(monthEl.value);
+
+  // Clear current options
+  dayEl.innerHTML = '';
+
+  if (!month || !MONTH_DAYS[month]) {
+    dayEl.disabled = true;
+    dayEl.innerHTML = '<option value="">— select month first —</option>';
+    if (noteEl) noteEl.classList.add('d-none');
+    return;
+  }
+
+  const info = MONTH_DAYS[month];
+  dayEl.disabled = false;
+
+  // Add a blank placeholder
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = '— day —';
+  if (!preselect) blank.selected = true;
+  dayEl.appendChild(blank);
+
+  let hasVariable = false;
+  for (let d = 1; d <= info.max; d++) {
+    const opt = document.createElement('option');
+    opt.value = d;
+    const isLastAndVariable = info.variable && d === info.max;
+    if (isLastAndVariable) {
+      opt.textContent = d + ' *';
+      opt.className = 'variable-day';
+      hasVariable = true;
+    } else {
+      opt.textContent = d;
+    }
+    if (preselect && d === preselect) opt.selected = true;
+    dayEl.appendChild(opt);
+  }
+
+  // Show/hide the asterisk note
+  const noteId = daySelectId + 'Note';
+  const note = document.getElementById(noteId);
+  if (note) {
+    note.classList.toggle('d-none', !hasVariable);
+  }
+}
+
+async function checkToday(e) {
+  e.preventDefault();
+  const btn = document.getElementById('checkBtn');
+  const origHtml = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking…';
+  btn.disabled = true;
+  try {
+    const res  = await fetch('/api/check-today');
+    const data = await res.json();
+    const names = data.birthdays.map(p => p.name);
+    if (names.length) {
+      alert('Birthdays found — WhatsApp notifications sent:\n' + names.join(', '));
+    } else {
+      alert('No birthdays today (' + data.date + ').');
+    }
+  } catch (err) {
+    alert('Error checking birthdays.');
+  } finally {
+    btn.innerHTML = origHtml;
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

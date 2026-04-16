@@ -1,0 +1,673 @@
+import os
+import re
+import json
+import logging
+import sqlite3
+from datetime import date, timedelta
+from pathlib import Path
+
+import requests
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from dotenv import load_dotenv
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from pyluach.dates import HebrewDate
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "birthday-bot-secret")
+
+
+DATABASE = os.environ.get("DATABASE_PATH", "/data/birthdays.db")
+NOTIFICATION_HOUR = int(os.environ.get("NOTIFICATION_HOUR", "9"))
+NOTIFICATION_MINUTE = int(os.environ.get("NOTIFICATION_MINUTE", "0"))
+TIMEZONE = os.environ.get("TIMEZONE", "Asia/Jerusalem")
+
+# Month numbering: Nisan=1, Iyar=2, ..., Tishrei=7, ..., Adar=12, Adar II=13
+HEBREW_MONTHS = {
+    1: "Nisan",
+    2: "Iyar",
+    3: "Sivan",
+    4: "Tammuz",
+    5: "Av",
+    6: "Elul",
+    7: "Tishrei",
+    8: "Cheshvan",
+    9: "Kislev",
+    10: "Tevet",
+    11: "Shvat",
+    12: "Adar",
+    13: "Adar II",
+}
+
+HEBREW_MONTHS_HE = {
+    1: "ניסן",
+    2: "אייר",
+    3: "סיוון",
+    4: "תמוז",
+    5: "אב",
+    6: "אלול",
+    7: "תשרי",
+    8: "חשון",
+    9: "כסלו",
+    10: "טבת",
+    11: "שבט",
+    12: "אדר",
+    13: "אדר ב'",
+}
+
+# Per-month day info sent to the frontend for the dynamic day selector.
+# max  = maximum possible days that month can ever have in any year type.
+# variable = True when the month does NOT always reach its max
+#   Cheshvan (8): 29 in deficient/regular years, 30 in complete years
+#   Kislev   (9): 29 in deficient years, 30 in regular/complete years
+#   Adar    (12): 29 in non-leap years (plain Adar), 30 in leap years (Adar I)
+MONTH_DAYS_INFO = {
+    1:  {"max": 30, "variable": False},  # Nisan   — always 30
+    2:  {"max": 29, "variable": False},  # Iyar    — always 29
+    3:  {"max": 30, "variable": False},  # Sivan   — always 30
+    4:  {"max": 29, "variable": False},  # Tammuz  — always 29
+    5:  {"max": 30, "variable": False},  # Av      — always 30
+    6:  {"max": 29, "variable": False},  # Elul    — always 29
+    7:  {"max": 30, "variable": False},  # Tishrei — always 30
+    8:  {"max": 30, "variable": True},   # Cheshvan — 29 or 30
+    9:  {"max": 30, "variable": True},   # Kislev  — 29 or 30
+    10: {"max": 29, "variable": False},  # Tevet   — always 29
+    11: {"max": 30, "variable": False},  # Shvat   — always 30
+    12: {"max": 30, "variable": True},   # Adar    — 29 (non-leap) / 30 as Adar I (leap)
+    13: {"max": 29, "variable": False},  # Adar II — always 29
+}
+
+
+# ---------------------------------------------------------------------------
+# Database helpers
+# ---------------------------------------------------------------------------
+
+def get_db():
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    os.makedirs(os.path.dirname(DATABASE), exist_ok=True)
+    conn = get_db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS people (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL,
+            hebrew_day  INTEGER NOT NULL,
+            hebrew_month INTEGER NOT NULL,
+            notes       TEXT,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+    logger.info("Database initialised at %s", DATABASE)
+
+
+# ---------------------------------------------------------------------------
+# Hebrew calendar helpers
+# ---------------------------------------------------------------------------
+
+def today_hebrew():
+    h = HebrewDate.today()
+    return h.year, h.month, h.day
+
+
+def is_leap_year(hebrew_year: int) -> bool:
+    return HebrewDate(hebrew_year, 7, 1).leap_year()
+
+
+def month_name(month: int) -> str:
+    return HEBREW_MONTHS.get(month, f"Month {month}")
+
+
+def format_hebrew_date(day: int, month: int, year: int | None = None) -> str:
+    name = HEBREW_MONTHS.get(month, str(month))
+    if year:
+        return f"{day} {name} {year}"
+    return f"{day} {name}"
+
+
+def get_people_with_birthday_on(hday: int, hmonth: int, hyear: int) -> list[dict]:
+    """Return all people whose Hebrew birthday falls on (hday, hmonth) in hyear."""
+    months_to_check = {hmonth}
+
+    # Adar II (13) in a leap year also covers people stored with plain Adar (12)
+    if hmonth == 13 and is_leap_year(hyear):
+        months_to_check.add(12)
+
+    conn = get_db()
+    placeholders = ",".join("?" for _ in months_to_check)
+    rows = conn.execute(
+        f"SELECT * FROM people WHERE hebrew_day = ? AND hebrew_month IN ({placeholders})",
+        [hday, *months_to_check],
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_upcoming_birthdays(days_ahead: int = 30) -> list[dict]:
+    """Scan the next *days_ahead* days and return upcoming birthdays with days_until."""
+    upcoming = []
+    today = date.today()
+
+    for delta in range(1, days_ahead + 1):
+        check_date = today + timedelta(days=delta)
+        h = HebrewDate.from_pydate(check_date)
+        people = get_people_with_birthday_on(h.day, h.month, h.year)
+        for p in people:
+            p["days_until"] = delta
+            p["next_hebrew_date"] = format_hebrew_date(h.day, h.month, h.year)
+            p["next_gregorian"] = check_date.strftime("%Y-%m-%d")
+            upcoming.append(p)
+
+    return upcoming
+
+
+# ---------------------------------------------------------------------------
+# Notification — WhatsApp via WAHA (self-hosted, linked device)
+# ---------------------------------------------------------------------------
+
+WAHA_URL     = os.environ.get("WAHA_URL", "http://waha:3000")
+WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "birthday-bot-key")
+WAHA_SESSION = "default"
+
+# ── Shared contacts store ────────────────────────────────────────────────────
+
+CONTACTS_FILE = os.environ.get("CONTACTS_FILE", "/data/contacts.json")
+
+def load_contacts() -> list:
+    try:
+        with open(CONTACTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_contacts(contacts: list) -> None:
+    Path(CONTACTS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(CONTACTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(contacts, f, indent=2, ensure_ascii=False)
+
+# ── Google Contacts ──────────────────────────────────────────────────────────
+
+_DATA_DIR = os.path.dirname(os.environ.get("DATABASE_PATH", "/data/birthdays.db"))
+GOOGLE_CREDENTIALS_FILE = os.path.join(_DATA_DIR, "google_credentials.json")
+GOOGLE_TOKEN_FILE        = os.path.join(_DATA_DIR, "google_token.json")
+GOOGLE_CACHE_FILE        = os.path.join(_DATA_DIR, "google_cache.json")
+GOOGLE_SCOPES            = ["https://www.googleapis.com/auth/contacts.readonly"]
+GOOGLE_REDIRECT_URI      = os.environ.get("GOOGLE_REDIRECT_URI",
+                               "http://localhost:5000/admin/google-callback")
+
+def normalize_phone(raw: str) -> str:
+    """Strip all non-digits, return the last 9 digits for matching."""
+    digits = re.sub(r"\D", "", raw)
+    return digits[-9:] if len(digits) >= 9 else digits
+
+def google_creds_exist() -> bool:
+    return os.path.exists(GOOGLE_CREDENTIALS_FILE)
+
+def google_token_exists() -> bool:
+    return os.path.exists(GOOGLE_TOKEN_FILE)
+
+def get_google_service():
+    """Return an authenticated Google People API service, or None."""
+    if not google_token_exists():
+        return None
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request as GRequest
+        from googleapiclient.discovery import build
+
+        creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_FILE, GOOGLE_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(GRequest())
+            with open(GOOGLE_TOKEN_FILE, "w") as f:
+                f.write(creds.to_json())
+        return build("people", "v1", credentials=creds, cache_discovery=False)
+    except Exception as exc:
+        logger.warning("Google auth error: %s", exc)
+        return None
+
+def load_google_cache() -> dict:
+    try:
+        with open(GOOGLE_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def sync_google_contacts() -> tuple[dict, int]:
+    """Fetch all Google contacts, cache phone→name map, update contact labels.
+    Returns (name_map, count_fetched)."""
+    service = get_google_service()
+    if not service:
+        return {}, 0
+
+    name_map: dict[str, str] = {}
+    try:
+        page_token = None
+        while True:
+            kwargs = dict(resourceName="people/me", pageSize=1000,
+                          personFields="names,phoneNumbers")
+            if page_token:
+                kwargs["pageToken"] = page_token
+            result = service.people().connections().list(**kwargs).execute()
+            for person in result.get("connections", []):
+                names = person.get("names", [])
+                if not names:
+                    continue
+                display_name = names[0].get("displayName", "")
+                for ph in person.get("phoneNumbers", []):
+                    key = normalize_phone(ph.get("value", ""))
+                    if key:
+                        name_map[key] = display_name
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+    except Exception as exc:
+        logger.warning("Error fetching Google contacts: %s", exc)
+        return {}, 0
+
+    # Cache on disk
+    Path(GOOGLE_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(GOOGLE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(name_map, f, ensure_ascii=False)
+
+    # Update labels in contacts.json where phone matches
+    contacts = load_contacts()
+    for c in contacts:
+        phone_key = normalize_phone(c["chatId"].split("@")[0])
+        if phone_key in name_map:
+            c["label"] = name_map[phone_key]
+    save_contacts(contacts)
+
+    return name_map, len(name_map)
+
+
+def _waha_headers() -> dict:
+    return {"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"}
+
+
+def ensure_whatsapp_instance() -> bool:
+    """Start the WAHA session if not already running."""
+    try:
+        r = requests.get(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}", headers=_waha_headers(), timeout=10)
+        if r.ok:
+            status = r.json().get("status", "STOPPED")
+            if status == "STOPPED":
+                requests.post(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start", headers=_waha_headers(), timeout=10)
+            return True
+        # Session doesn't exist — create and start it
+        requests.post(f"{WAHA_URL}/api/sessions", headers=_waha_headers(), json={"name": WAHA_SESSION}, timeout=10)
+        requests.post(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start", headers=_waha_headers(), timeout=10)
+        return True
+    except Exception as exc:
+        logger.warning("Could not ensure WAHA session: %s", exc)
+        return False
+
+
+def whatsapp_connection_status() -> dict:
+    """Return {'state': 'open'|'connecting'|'unknown', 'qr': '<base64 or None>'}."""
+    try:
+        r = requests.get(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}", headers=_waha_headers(), timeout=8)
+        if not r.ok:
+            return {"state": "unknown", "qr": None}
+        status = r.json().get("status", "STOPPED")
+
+        if status == "WORKING":
+            return {"state": "open", "qr": None}
+
+        qr_b64 = None
+        if status == "SCAN_QR_CODE":
+            qr_r = requests.get(
+                f"{WAHA_URL}/api/{WAHA_SESSION}/auth/qr",
+                headers=_waha_headers(),
+                timeout=8,
+            )
+            if qr_r.ok:
+                import base64
+                qr_b64 = "data:image/png;base64," + base64.b64encode(qr_r.content).decode()
+
+        return {"state": "connecting", "qr": qr_b64}
+    except Exception as exc:
+        logger.warning("Could not fetch WAHA status: %s", exc)
+        return {"state": "unknown", "qr": None}
+
+
+def send_whatsapp(message: str) -> bool:
+    """Send *message* to every contact flagged birthday=True in contacts.json."""
+    recipients = [c for c in load_contacts() if c.get("birthday")]
+
+    # Fallback: legacy WHATSAPP_RECIPIENTS env var
+    if not recipients:
+        for number in os.environ.get("WHATSAPP_RECIPIENTS", "").split(","):
+            number = number.strip()
+            if number:
+                recipients.append({"label": number, "chatId": f"{number}@c.us"})
+
+    if not recipients:
+        logger.warning("No birthday recipients configured — skipping notification")
+        return False
+
+    all_ok = True
+    for c in recipients:
+        chat_id = c["chatId"]
+        label   = c.get("label", chat_id)
+        try:
+            resp = requests.post(
+                f"{WAHA_URL}/api/sendText",
+                headers=_waha_headers(),
+                json={"chatId": chat_id, "text": message, "session": WAHA_SESSION},
+                timeout=15,
+            )
+            if resp.ok:
+                logger.info("WhatsApp sent to %s (%s)", label, chat_id)
+            else:
+                logger.error("WAHA error for %s: %s", label, resp.text[:200])
+                all_ok = False
+        except Exception as exc:
+            logger.error("WhatsApp send failed for %s: %s", label, exc)
+            all_ok = False
+
+    return all_ok
+
+
+def run_daily_check():
+    """Called by the scheduler every day at the configured time."""
+    hyear, hmonth, hday = today_hebrew()
+    date_str = format_hebrew_date(hday, hmonth, hyear)
+    logger.info("Running daily birthday check for %s", date_str)
+
+    people = get_people_with_birthday_on(hday, hmonth, hyear)
+    if not people:
+        logger.info("No birthdays today.")
+        return
+
+    for person in people:
+        lines = [
+            "Happy Birthday! 🎂",
+            f"Today ({date_str}) is the Hebrew birthday of {person['name']}!",
+        ]
+        if person.get("notes"):
+            lines.append(f"Note: {person['notes']}")
+        send_whatsapp("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    hyear, hmonth, hday = today_hebrew()
+    today_str = format_hebrew_date(hday, hmonth, hyear)
+
+    conn = get_db()
+    people = conn.execute(
+        "SELECT * FROM people ORDER BY hebrew_month, hebrew_day"
+    ).fetchall()
+    conn.close()
+
+    todays_birthdays = get_people_with_birthday_on(hday, hmonth, hyear)
+    upcoming = get_upcoming_birthdays(days_ahead=30)
+
+    return render_template(
+        "index.html",
+        people=people,
+        today_str=today_str,
+        todays_birthdays=todays_birthdays,
+        upcoming=upcoming,
+        hebrew_months=HEBREW_MONTHS,
+        month_days_info=MONTH_DAYS_INFO,
+    )
+
+
+@app.route("/add", methods=["POST"])
+def add_person():
+    name = request.form.get("name", "").strip()
+    hebrew_day = request.form.get("hebrew_day", type=int)
+    hebrew_month = request.form.get("hebrew_month", type=int)
+    notes = request.form.get("notes", "").strip()
+
+    if not name or not hebrew_day or not hebrew_month:
+        flash("Please fill in name, day, and month.", "danger")
+        return redirect(url_for("index"))
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO people (name, hebrew_day, hebrew_month, notes) VALUES (?, ?, ?, ?)",
+        (name, hebrew_day, hebrew_month, notes),
+    )
+    conn.commit()
+    conn.close()
+    flash(f"Added {name}!", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/edit/<int:pid>", methods=["GET", "POST"])
+def edit_person(pid):
+    conn = get_db()
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        hebrew_day = request.form.get("hebrew_day", type=int)
+        hebrew_month = request.form.get("hebrew_month", type=int)
+        notes = request.form.get("notes", "").strip()
+        conn.execute(
+            "UPDATE people SET name=?, hebrew_day=?, hebrew_month=?, notes=? WHERE id=?",
+            (name, hebrew_day, hebrew_month, notes, pid),
+        )
+        conn.commit()
+        conn.close()
+        flash(f"Updated {name}.", "success")
+        return redirect(url_for("index"))
+
+    person = conn.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+    conn.close()
+    if not person:
+        flash("Person not found.", "danger")
+        return redirect(url_for("index"))
+    return render_template(
+        "edit.html",
+        person=dict(person),
+        hebrew_months=HEBREW_MONTHS,
+        month_days_info=MONTH_DAYS_INFO,
+    )
+
+
+@app.route("/delete/<int:pid>", methods=["POST"])
+def delete_person(pid):
+    conn = get_db()
+    row = conn.execute("SELECT name FROM people WHERE id=?", (pid,)).fetchone()
+    conn.execute("DELETE FROM people WHERE id=?", (pid,))
+    conn.commit()
+    conn.close()
+    if row:
+        flash(f"Deleted {row['name']}.", "success")
+    return redirect(url_for("index"))
+
+
+@app.route("/whatsapp-setup")
+def whatsapp_setup():
+    ensure_whatsapp_instance()
+    status = whatsapp_connection_status()
+    return render_template("whatsapp_setup.html", status=status)
+
+
+@app.route("/api/check-today")
+def api_check_today():
+    """Manually trigger today's birthday check (also sends WhatsApp if configured)."""
+    run_daily_check()
+    hyear, hmonth, hday = today_hebrew()
+    people = get_people_with_birthday_on(hday, hmonth, hyear)
+    return jsonify({"date": format_hebrew_date(hday, hmonth, hyear), "birthdays": people})
+
+
+@app.route("/api/test-network")
+def api_test_network():
+    """Test if this container can reach the internet."""
+    try:
+        r = requests.get("https://www.google.com", timeout=5)
+        return jsonify({"internet": True, "status": r.status_code})
+    except Exception as e:
+        return jsonify({"internet": False, "error": str(e)})
+
+
+@app.route("/api/upcoming")
+def api_upcoming():
+    days = request.args.get("days", 30, type=int)
+    return jsonify(get_upcoming_birthdays(days_ahead=days))
+
+
+# ---------------------------------------------------------------------------
+# Contacts admin — unified management for birthday + omer recipients
+# ---------------------------------------------------------------------------
+
+@app.route("/admin/contacts")
+def admin_contacts():
+    contacts     = load_contacts()
+    contact_map  = {c["chatId"]: c for c in contacts}
+    google_cache = load_google_cache()
+
+    all_chats, chats_error = [], ""
+    try:
+        r = requests.get(f"{WAHA_URL}/api/{WAHA_SESSION}/chats",
+                         headers=_waha_headers(), timeout=15,
+                         params={"limit": 1000, "offset": 0})
+        if r.ok:
+            all_chats = r.json() or []
+    except Exception as exc:
+        chats_error = str(exc)
+
+    enriched = []
+    for chat in all_chats:
+        cid = chat.get("id", "")
+        if not cid or cid.endswith("@broadcast"):
+            continue
+        phone     = cid.split("@")[0]
+        phone_key = normalize_phone(phone)
+        is_group  = chat.get("isGroup", False) or cid.endswith("@g.us")
+
+        google_name = google_cache.get(phone_key, "")
+        waha_name   = chat.get("name", "")
+        display     = google_name or waha_name or ""
+
+        existing = contact_map.get(cid, {})
+        enriched.append({
+            "chatId":      cid,
+            "displayName": display,
+            "phone":       phone,
+            "isGroup":     is_group,
+            "birthday":    existing.get("birthday", False),
+            "omer":        existing.get("omer", False),
+        })
+
+    # Groups first, then alphabetically by display name / phone
+    enriched.sort(key=lambda x: (not x["isGroup"], (x["displayName"] or x["phone"]).lower()))
+
+    return render_template(
+        "contacts.html",
+        chats=enriched,
+        chats_error=chats_error,
+        google_connected=google_token_exists(),
+        google_creds_exist=google_creds_exist(),
+    )
+
+
+@app.route("/admin/contacts/toggle", methods=["POST"])
+def toggle_contact():
+    data    = request.get_json() or {}
+    chat_id = data.get("chatId", "")
+    flag    = data.get("flag", "")
+    value   = bool(data.get("value"))
+    label   = data.get("label") or chat_id
+
+    if flag not in ("birthday", "omer") or not chat_id:
+        return jsonify({"ok": False, "error": "invalid"}), 400
+
+    contacts = load_contacts()
+    existing = next((c for c in contacts if c["chatId"] == chat_id), None)
+
+    if existing:
+        existing[flag] = value
+        if not existing.get("birthday") and not existing.get("omer"):
+            contacts = [c for c in contacts if c["chatId"] != chat_id]
+    elif value:
+        contacts.append({"label": label, "chatId": chat_id,
+                         "birthday": flag == "birthday", "omer": flag == "omer"})
+
+    save_contacts(contacts)
+    return jsonify({"ok": True})
+
+
+@app.route("/admin/google-auth")
+def google_auth():
+    if not google_creds_exist():
+        flash("Upload google_credentials.json to /data/ first, then try again.", "danger")
+        return redirect(url_for("admin_contacts"))
+    from google_auth_oauthlib.flow import Flow
+    flow = Flow.from_client_secrets_file(
+        GOOGLE_CREDENTIALS_FILE, scopes=GOOGLE_SCOPES,
+        redirect_uri=GOOGLE_REDIRECT_URI)
+    auth_url, state = flow.authorization_url(access_type="offline",
+                                              include_granted_scopes="true",
+                                              prompt="consent")
+    session["google_oauth_state"] = state
+    return redirect(auth_url)
+
+
+@app.route("/admin/google-callback")
+def google_callback():
+    from google_auth_oauthlib.flow import Flow
+    state = session.get("google_oauth_state", "")
+    flow = Flow.from_client_secrets_file(
+        GOOGLE_CREDENTIALS_FILE, scopes=GOOGLE_SCOPES,
+        state=state, redirect_uri=GOOGLE_REDIRECT_URI)
+    flow.fetch_token(authorization_response=request.url)
+    with open(GOOGLE_TOKEN_FILE, "w") as f:
+        f.write(flow.credentials.to_json())
+    flash("Google Contacts connected! Syncing now…", "success")
+    # Trigger an immediate sync
+    _, count = sync_google_contacts()
+    flash(f"Imported {count} Google contact names.", "success")
+    return redirect(url_for("admin_contacts"))
+
+
+@app.route("/admin/google-sync", methods=["POST"])
+def google_sync():
+    _, count = sync_google_contacts()
+    if count:
+        flash(f"Synced {count} Google contact names.", "success")
+    else:
+        flash("Could not fetch Google contacts — is the account connected?", "warning")
+    return redirect(url_for("admin_contacts"))
+
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+def start_scheduler():
+    scheduler = BackgroundScheduler(timezone=TIMEZONE)
+    scheduler.add_job(
+        run_daily_check,
+        CronTrigger(hour=NOTIFICATION_HOUR, minute=NOTIFICATION_MINUTE, timezone=TIMEZONE),
+        id="daily_birthday_check",
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info(
+        "Scheduler started — daily check at %02d:%02d %s",
+        NOTIFICATION_HOUR, NOTIFICATION_MINUTE, TIMEZONE,
+    )
+    return scheduler
+
+
+if __name__ == "__main__":
+    init_db()
+    scheduler = start_scheduler()
+    app.run(host="0.0.0.0", port=5000, debug=False)
