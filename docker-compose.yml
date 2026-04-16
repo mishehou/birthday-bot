@@ -19,6 +19,8 @@ services:
       WHATSAPP_DEFAULT_ENGINE:        NOWEB
       WHATSAPP_RESTART_ALL_SESSIONS:  "true"
       WHATSAPP_API_KEY:               birthday-bot-key
+      WHATSAPP_NOWEB_STORE_ENABLED:   "true"
+      WHATSAPP_NOWEB_STORE_FULL_SYNC: "true"
     networks:
       - whatsapp-net
 

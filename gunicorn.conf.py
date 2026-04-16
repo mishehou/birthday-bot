@@ -1,7 +1,9 @@
 # Gunicorn configuration
-# Single worker so only one scheduler instance runs
+# Single gevent worker: one scheduler instance, but async so WAHA calls
+# don't freeze the site while waiting for a response.
 bind = "0.0.0.0:5000"
 workers = 1
+worker_class = "gevent"
 timeout = 120
 accesslog = "-"
 errorlog = "-"

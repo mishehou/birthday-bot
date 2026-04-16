@@ -293,18 +293,40 @@ def _waha_headers() -> dict:
     return {"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"}
 
 
+_NOWEB_SESSION_CONFIG = {
+    "noweb": {"store": {"enabled": True, "fullSync": True}}
+}
+
+
 def ensure_whatsapp_instance() -> bool:
     """Start the WAHA session if not already running."""
     try:
         r = requests.get(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}", headers=_waha_headers(), timeout=10)
         if r.ok:
-            status = r.json().get("status", "STOPPED")
-            if status == "STOPPED":
-                requests.post(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start", headers=_waha_headers(), timeout=10)
+            data = r.json()
+            status = data.get("status", "STOPPED")
+            store_enabled = data.get("config", {}).get("noweb", {}).get("store", {}).get("enabled", False)
+            if not store_enabled:
+                requests.put(
+                    f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
+                    headers=_waha_headers(),
+                    json={"config": _NOWEB_SESSION_CONFIG},
+                    timeout=10,
+                )
+            elif status == "STOPPED":
+                requests.post(
+                    f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start",
+                    headers=_waha_headers(),
+                    timeout=10,
+                )
             return True
-        # Session doesn't exist — create and start it
-        requests.post(f"{WAHA_URL}/api/sessions", headers=_waha_headers(), json={"name": WAHA_SESSION}, timeout=10)
-        requests.post(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start", headers=_waha_headers(), timeout=10)
+        # Session doesn't exist — create it
+        requests.post(
+            f"{WAHA_URL}/api/sessions",
+            headers=_waha_headers(),
+            json={"name": WAHA_SESSION, "config": _NOWEB_SESSION_CONFIG},
+            timeout=10,
+        )
         return True
     except Exception as exc:
         logger.warning("Could not ensure WAHA session: %s", exc)
@@ -507,6 +529,38 @@ def api_check_today():
     return jsonify({"date": format_hebrew_date(hday, hmonth, hyear), "birthdays": people})
 
 
+@app.route("/test")
+def test_send():
+    """Send a test birthday message to all birthday-flagged contacts."""
+    recipients = [c for c in load_contacts() if c.get("birthday")]
+    if not recipients:
+        return ("No contacts flagged for Birthday. "
+                "<a href='/admin/contacts'>Go to Contacts</a>"), 200
+
+    hyear, hmonth, hday = today_hebrew()
+    date_str = format_hebrew_date(hday, hmonth, hyear)
+    test_msg = f"🧪 Test message from Birthday Bot\nToday is {date_str}."
+
+    results = []
+    for c in recipients:
+        try:
+            resp = requests.post(
+                f"{WAHA_URL}/api/sendText",
+                headers=_waha_headers(),
+                json={"chatId": c["chatId"], "text": test_msg, "session": WAHA_SESSION},
+                timeout=15,
+            )
+            ok = resp.ok
+        except Exception as exc:
+            ok = False
+            logger.error("Test send failed for %s: %s", c.get("label"), exc)
+        results.append(f"{c.get('label', c['chatId'])}: {'✓ sent' if ok else '✗ FAILED'}")
+
+    return (f"<pre>{'<br>'.join(results)}</pre>"
+            f"<br><a href='/admin/contacts'>Back to Contacts</a>"
+            f"&nbsp; <a href='/'>Back to Birthdays</a>")
+
+
 @app.route("/api/test-network")
 def api_test_network():
     """Test if this container can reach the internet."""
@@ -538,8 +592,10 @@ def admin_contacts():
         r = requests.get(f"{WAHA_URL}/api/{WAHA_SESSION}/chats",
                          headers=_waha_headers(), timeout=15,
                          params={"limit": 1000, "offset": 0})
-        if r.ok:
-            all_chats = r.json() or []
+        all_chats = r.json() or []
+        if isinstance(all_chats, dict):  # error envelope instead of list
+            chats_error = all_chats.get("message", str(all_chats))
+            all_chats = []
     except Exception as exc:
         chats_error = str(exc)
 
