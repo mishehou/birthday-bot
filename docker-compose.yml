@@ -35,6 +35,8 @@ services:
       - "5050:5000"
     volumes:
       - ./data:/data
+      - ./app.py:/app/app.py:ro
+      - ./templates:/app/templates:ro
     environment:
       WAHA_URL:              http://waha:3000
       WAHA_API_KEY:          birthday-bot-key

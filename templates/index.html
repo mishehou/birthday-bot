@@ -16,7 +16,6 @@
       padding: 2px 8px; border-radius: 20px;
       background: #e9ecef; color: #495057;
     }
-    option.variable-day { color: #6c757d; font-style: italic; }
   </style>
 </head>
 <body>
@@ -83,15 +82,23 @@
                      placeholder="e.g. Avraham Cohen" required>
             </div>
 
-            <!-- Month first, then day (day options depend on month) -->
+            <!-- Year → Month → Day (each depends on the previous) -->
+            <div class="mb-2">
+              <label class="form-label">Hebrew Year <span class="text-danger">*</span></label>
+              <select class="form-select" name="hebrew_year_ui" id="addYear"
+                      onchange="onYearChange('addYear','addMonth','addDay')">
+                <option value="">— select year —</option>
+                {% for y in range(5700, 5801) %}
+                  <option value="{{ y }}" {% if y == current_hebrew_year %}selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
             <div class="mb-2">
               <label class="form-label">Hebrew Month <span class="text-danger">*</span></label>
               <select class="form-select" name="hebrew_month" id="addMonth"
-                      onchange="buildDayOptions('addMonth','addDay')" required>
-                <option value="">— select month —</option>
-                {% for num, name in hebrew_months.items() %}
-                  <option value="{{ num }}">{{ name }}</option>
-                {% endfor %}
+                      onchange="buildDayOptions('addMonth','addDay')" disabled required>
+                <option value="">— select year first —</option>
               </select>
             </div>
 
@@ -100,10 +107,6 @@
               <select class="form-select" name="hebrew_day" id="addDay" disabled required>
                 <option value="">— select month first —</option>
               </select>
-              <div id="addDayNote" class="form-text text-warning d-none">
-                <i class="bi bi-exclamation-triangle-fill"></i>
-                Days marked <em>*</em> exist only in some year types (e.g. complete years or leap years).
-              </div>
             </div>
 
             <div class="mb-3">
@@ -111,6 +114,16 @@
               <input type="text" class="form-control" name="notes"
                      placeholder="e.g. send flowers">
             </div>
+
+            <div class="mb-3">
+              <label class="form-label">Gender <small class="text-muted">(optional)</small></label>
+              <select class="form-select" name="gender">
+                <option value="">— not specified —</option>
+                <option value="M">M — Male</option>
+                <option value="F">F — Female</option>
+              </select>
+            </div>
+
             <button type="submit" class="btn btn-primary w-100">
               <i class="bi bi-plus-circle"></i> Add
             </button>
@@ -163,6 +176,7 @@
               <tr>
                 <th>Name</th>
                 <th>Hebrew Birthday</th>
+                <th>Gender</th>
                 <th>Notes</th>
                 <th></th>
               </tr>
@@ -173,6 +187,11 @@
                 <td><strong>{{ p.name }}</strong></td>
                 <td>
                   <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
+                </td>
+                <td class="text-center">
+                  {% if p.gender == 'M' %}<span class="badge bg-primary">M</span>
+                  {% elif p.gender == 'F' %}<span class="badge bg-danger">F</span>
+                  {% endif %}
                 </td>
                 <td class="text-muted small">{{ p.notes or '' }}</td>
                 <td class="text-end">
@@ -205,66 +224,72 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-// Authoritative day counts per Hebrew month (pyluach numbering: Nisan=1, Tishrei=7)
-// variable: true  → the last day of that month does not exist in every year
-const MONTH_DAYS = {{ month_days_info | tojson }};
+// Stores the fetched year data for the add form
+let addYearData = null;
 
-/**
- * Rebuild the day <select> for the given month.
- * @param {string} monthSelectId  id of the month <select>
- * @param {string} daySelectId    id of the day <select>
- * @param {number} [preselect]    day to pre-select (for edit form)
- */
+async function onYearChange(yearSelectId, monthSelectId, daySelectId) {
+  const year = parseInt(document.getElementById(yearSelectId).value);
+  const monthEl = document.getElementById(monthSelectId);
+  const dayEl   = document.getElementById(daySelectId);
+
+  monthEl.innerHTML = '<option value="">— select month —</option>';
+  monthEl.disabled = true;
+  dayEl.innerHTML   = '<option value="">— select month first —</option>';
+  dayEl.disabled    = true;
+  addYearData = null;
+
+  if (!year) return;
+
+  try {
+    const res  = await fetch(`/api/year-info/${year}`);
+    const data = await res.json();
+    addYearData = data;
+    for (const m of data.months) {
+      const opt = document.createElement('option');
+      opt.value   = m.num;
+      opt.textContent = m.name;
+      monthEl.appendChild(opt);
+    }
+    monthEl.disabled = false;
+  } catch(e) {
+    console.error('Failed to fetch year info:', e);
+  }
+}
+
 function buildDayOptions(monthSelectId, daySelectId, preselect) {
   const monthEl = document.getElementById(monthSelectId);
   const dayEl   = document.getElementById(daySelectId);
-  const noteEl  = document.getElementById(monthSelectId.replace('Month', 'DayNote')
-                                           || daySelectId + 'Note');
-  const month = parseInt(monthEl.value);
+  const month   = parseInt(monthEl.value);
 
-  // Clear current options
   dayEl.innerHTML = '';
 
-  if (!month || !MONTH_DAYS[month]) {
+  if (!month || !addYearData) {
     dayEl.disabled = true;
     dayEl.innerHTML = '<option value="">— select month first —</option>';
-    if (noteEl) noteEl.classList.add('d-none');
     return;
   }
 
-  const info = MONTH_DAYS[month];
-  dayEl.disabled = false;
+  const monthInfo = addYearData.months.find(m => m.num === month);
+  if (!monthInfo) { dayEl.disabled = true; return; }
 
-  // Add a blank placeholder
+  dayEl.disabled = false;
   const blank = document.createElement('option');
-  blank.value = '';
-  blank.textContent = '— day —';
+  blank.value = ''; blank.textContent = '— day —';
   if (!preselect) blank.selected = true;
   dayEl.appendChild(blank);
 
-  let hasVariable = false;
-  for (let d = 1; d <= info.max; d++) {
+  for (let d = 1; d <= monthInfo.days; d++) {
     const opt = document.createElement('option');
-    opt.value = d;
-    const isLastAndVariable = info.variable && d === info.max;
-    if (isLastAndVariable) {
-      opt.textContent = d + ' *';
-      opt.className = 'variable-day';
-      hasVariable = true;
-    } else {
-      opt.textContent = d;
-    }
+    opt.value = d; opt.textContent = d;
     if (preselect && d === preselect) opt.selected = true;
     dayEl.appendChild(opt);
   }
-
-  // Show/hide the asterisk note
-  const noteId = daySelectId + 'Note';
-  const note = document.getElementById(noteId);
-  if (note) {
-    note.classList.toggle('d-none', !hasVariable);
-  }
 }
+
+// Auto-load months for the pre-selected year on page load
+window.addEventListener('DOMContentLoaded', () => {
+  onYearChange('addYear', 'addMonth', 'addDay');
+});
 
 async function checkToday(e) {
   e.preventDefault();

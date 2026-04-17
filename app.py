@@ -102,9 +102,15 @@ def init_db():
             hebrew_day  INTEGER NOT NULL,
             hebrew_month INTEGER NOT NULL,
             notes       TEXT,
+            gender      TEXT    DEFAULT '',
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migration: add gender column to existing databases
+    try:
+        conn.execute("ALTER TABLE people ADD COLUMN gender TEXT DEFAULT ''")
+    except Exception:
+        pass  # Column already exists
     conn.commit()
     conn.close()
     logger.info("Database initialised at %s", DATABASE)
@@ -120,7 +126,8 @@ def today_hebrew():
 
 
 def is_leap_year(hebrew_year: int) -> bool:
-    return HebrewDate(hebrew_year, 7, 1).leap_year()
+    # Standard Hebrew calendar formula: years 3,6,8,11,14,17,19 of each 19-year cycle
+    return (7 * hebrew_year + 1) % 19 < 7
 
 
 def month_name(month: int) -> str:
@@ -305,8 +312,10 @@ def ensure_whatsapp_instance() -> bool:
         if r.ok:
             data = r.json()
             status = data.get("status", "STOPPED")
-            store_enabled = data.get("config", {}).get("noweb", {}).get("store", {}).get("enabled", False)
+            config = data.get("config") or {}          # null config → treat as empty
+            store_enabled = (config.get("noweb") or {}).get("store", {}).get("enabled", False)
             if not store_enabled:
+                # Config missing or store not enabled — update config (WAHA will restart session)
                 requests.put(
                     f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
                     headers=_waha_headers(),
@@ -446,6 +455,7 @@ def index():
         upcoming=upcoming,
         hebrew_months=HEBREW_MONTHS,
         month_days_info=MONTH_DAYS_INFO,
+        current_hebrew_year=hyear,
     )
 
 
@@ -455,6 +465,7 @@ def add_person():
     hebrew_day = request.form.get("hebrew_day", type=int)
     hebrew_month = request.form.get("hebrew_month", type=int)
     notes = request.form.get("notes", "").strip()
+    gender = request.form.get("gender", "").strip()
 
     if not name or not hebrew_day or not hebrew_month:
         flash("Please fill in name, day, and month.", "danger")
@@ -462,8 +473,8 @@ def add_person():
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO people (name, hebrew_day, hebrew_month, notes) VALUES (?, ?, ?, ?)",
-        (name, hebrew_day, hebrew_month, notes),
+        "INSERT INTO people (name, hebrew_day, hebrew_month, notes, gender) VALUES (?, ?, ?, ?, ?)",
+        (name, hebrew_day, hebrew_month, notes, gender),
     )
     conn.commit()
     conn.close()
@@ -479,9 +490,10 @@ def edit_person(pid):
         hebrew_day = request.form.get("hebrew_day", type=int)
         hebrew_month = request.form.get("hebrew_month", type=int)
         notes = request.form.get("notes", "").strip()
+        gender = request.form.get("gender", "").strip()
         conn.execute(
-            "UPDATE people SET name=?, hebrew_day=?, hebrew_month=?, notes=? WHERE id=?",
-            (name, hebrew_day, hebrew_month, notes, pid),
+            "UPDATE people SET name=?, hebrew_day=?, hebrew_month=?, notes=?, gender=? WHERE id=?",
+            (name, hebrew_day, hebrew_month, notes, gender, pid),
         )
         conn.commit()
         conn.close()
@@ -498,6 +510,7 @@ def edit_person(pid):
         person=dict(person),
         hebrew_months=HEBREW_MONTHS,
         month_days_info=MONTH_DAYS_INFO,
+        current_hebrew_year=today_hebrew()[0],
     )
 
 
@@ -518,6 +531,43 @@ def whatsapp_setup():
     ensure_whatsapp_instance()
     status = whatsapp_connection_status()
     return render_template("whatsapp_setup.html", status=status)
+
+
+@app.route("/api/year-info/<int:year>")
+def api_year_info(year):
+    """Return month list with exact day counts for a specific Hebrew year."""
+    if not (5700 <= year <= 5800):
+        return jsonify({"error": "Year out of range"}), 400
+    try:
+        leap = is_leap_year(year)
+
+        # Year length determines Cheshvan/Kislev days:
+        # deficient (mod 10 == 3): Cheshvan=29, Kislev=29
+        # regular   (mod 10 == 4): Cheshvan=29, Kislev=30
+        # complete  (mod 10 == 5): Cheshvan=30, Kislev=30
+        d1 = HebrewDate(year, 7, 1).to_pydate()
+        d2 = HebrewDate(year + 1, 7, 1).to_pydate()
+        year_days = (d2 - d1).days
+        remainder = year_days % 10
+        cheshvan_days = 30 if remainder == 5 else 29
+        kislev_days   = 29 if remainder == 3 else 30
+
+        day_counts = {
+            1: 30, 2: 29, 3: 30, 4: 29, 5: 30, 6: 29,
+            7: 30, 8: cheshvan_days, 9: kislev_days,
+            10: 29, 11: 30,
+            12: 30 if leap else 29,
+            13: 29,
+        }
+        month_nums = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        if leap:
+            month_nums.append(13)
+
+        months = [{"num": m, "name": HEBREW_MONTHS[m], "days": day_counts[m]}
+                  for m in month_nums]
+        return jsonify({"year": year, "leap": leap, "months": months})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/check-today")
