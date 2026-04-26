@@ -11,6 +11,11 @@ services:
     image: devlikeapro/waha
     container_name: waha
     restart: unless-stopped
+    # Remove stale SQLite WAL/SHM lock files before starting to prevent SQLITE_BUSY on restart
+    command: >
+      sh -c "find /app/.sessions -name '*.sqlite3-shm' -delete;
+             find /app/.sessions -name '*.sqlite3-wal' -delete;
+             exec /entrypoint.sh"
     ports:
       - "3000:3000"
     volumes:
@@ -46,7 +51,7 @@ services:
       SECRET_KEY:            ${SECRET_KEY:-change-me}
       DATABASE_PATH:         /data/birthdays.db
       CONTACTS_FILE:         /data/contacts.json
-      GOOGLE_REDIRECT_URI:   ${GOOGLE_REDIRECT_URI:-http://localhost:5000/admin/google-callback}
+      GOOGLE_REDIRECT_URI:   ${GOOGLE_REDIRECT_URI:-http://localhost:5050/admin/google-callback}
       OAUTHLIB_INSECURE_TRANSPORT: "1"
     networks:
       - whatsapp-net

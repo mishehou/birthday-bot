@@ -53,7 +53,7 @@
       {% for p in todays_birthdays %}
         <div class="d-flex align-items-center gap-2 mb-1">
           <i class="bi bi-gift-fill text-danger"></i>
-          <strong>{{ p.name }}</strong>
+          <strong>{{ p.first_name }} {{ p.last_name }}</strong>
           <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
           {% if p.notes %}<small class="text-muted">— {{ p.notes }}</small>{% endif %}
           <button class="btn btn-sm btn-warning ms-auto" onclick="checkToday(event)"
@@ -76,10 +76,17 @@
         </div>
         <div class="card-body">
           <form method="post" action="/add" id="addForm">
-            <div class="mb-3">
-              <label class="form-label">Name <span class="text-danger">*</span></label>
-              <input type="text" class="form-control" name="name"
-                     placeholder="e.g. Avraham Cohen" required>
+            <div class="row g-2 mb-3">
+              <div class="col">
+                <label class="form-label">First Name <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" name="first_name"
+                       placeholder="e.g. Avraham" required>
+              </div>
+              <div class="col">
+                <label class="form-label">Last Name</label>
+                <input type="text" class="form-control" name="last_name"
+                       placeholder="e.g. Cohen">
+              </div>
             </div>
 
             <!-- Year → Month → Day (each depends on the previous) -->
@@ -174,7 +181,8 @@
           <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
               <tr>
-                <th>Name</th>
+                <th>First Name</th>
+                <th>Last Name</th>
                 <th>Hebrew Birthday</th>
                 <th>Gender</th>
                 <th>Notes</th>
@@ -184,7 +192,8 @@
             <tbody>
               {% for p in people %}
               <tr>
-                <td><strong>{{ p.name }}</strong></td>
+                <td><strong>{{ p.first_name }}</strong></td>
+                <td>{{ p.last_name or '' }}</td>
                 <td>
                   <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
                 </td>
@@ -199,7 +208,7 @@
                     <i class="bi bi-pencil"></i>
                   </a>
                   <form method="post" action="/delete/{{ p.id }}" class="d-inline"
-                        onsubmit="return confirm('Delete {{ p.name }}?')">
+                        onsubmit="return confirm('Delete {{ p.first_name }} {{ p.last_name }}?')">
                     <button class="btn btn-sm btn-outline-danger">
                       <i class="bi bi-trash"></i>
                     </button>

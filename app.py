@@ -99,6 +99,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS people (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT    NOT NULL,
+            first_name  TEXT    NOT NULL DEFAULT '',
+            last_name   TEXT    NOT NULL DEFAULT '',
             hebrew_day  INTEGER NOT NULL,
             hebrew_month INTEGER NOT NULL,
             notes       TEXT,
@@ -106,11 +108,27 @@ def init_db():
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Migration: add gender column to existing databases
-    try:
-        conn.execute("ALTER TABLE people ADD COLUMN gender TEXT DEFAULT ''")
-    except Exception:
-        pass  # Column already exists
+    # Migrations: add columns to existing databases
+    for col_def in [
+        "ALTER TABLE people ADD COLUMN gender TEXT DEFAULT ''",
+        "ALTER TABLE people ADD COLUMN first_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE people ADD COLUMN last_name TEXT NOT NULL DEFAULT ''",
+    ]:
+        try:
+            conn.execute(col_def)
+        except Exception:
+            pass  # Column already exists
+    # Migrate: split existing name into first_name / last_name where not yet done
+    conn.execute("""
+        UPDATE people SET
+            first_name = CASE WHEN instr(name, ' ') > 0
+                              THEN substr(name, 1, instr(name, ' ') - 1)
+                              ELSE name END,
+            last_name  = CASE WHEN instr(name, ' ') > 0
+                              THEN substr(name, instr(name, ' ') + 1)
+                              ELSE '' END
+        WHERE first_name = '' OR first_name IS NULL
+    """)
     conn.commit()
     conn.close()
     logger.info("Database initialised at %s", DATABASE)
@@ -201,45 +219,15 @@ def save_contacts(contacts: list) -> None:
     with open(CONTACTS_FILE, "w", encoding="utf-8") as f:
         json.dump(contacts, f, indent=2, ensure_ascii=False)
 
-# ── Google Contacts ──────────────────────────────────────────────────────────
+# ── Phone / contacts cache ───────────────────────────────────────────────────
 
-_DATA_DIR = os.path.dirname(os.environ.get("DATABASE_PATH", "/data/birthdays.db"))
-GOOGLE_CREDENTIALS_FILE = os.path.join(_DATA_DIR, "google_credentials.json")
-GOOGLE_TOKEN_FILE        = os.path.join(_DATA_DIR, "google_token.json")
-GOOGLE_CACHE_FILE        = os.path.join(_DATA_DIR, "google_cache.json")
-GOOGLE_SCOPES            = ["https://www.googleapis.com/auth/contacts.readonly"]
-GOOGLE_REDIRECT_URI      = os.environ.get("GOOGLE_REDIRECT_URI",
-                               "http://localhost:5000/admin/google-callback")
+_DATA_DIR       = os.path.dirname(os.environ.get("DATABASE_PATH", "/data/birthdays.db"))
+GOOGLE_CACHE_FILE = os.path.join(_DATA_DIR, "google_cache.json")
 
 def normalize_phone(raw: str) -> str:
-    """Strip all non-digits, return the last 9 digits for matching."""
-    digits = re.sub(r"\D", "", raw)
+    """Strip all non-digits (including non-breaking spaces), return last 9 digits."""
+    digits = re.sub(r"[^\d]", "", raw)   # strips spaces, dashes, Â, \u00a0, etc.
     return digits[-9:] if len(digits) >= 9 else digits
-
-def google_creds_exist() -> bool:
-    return os.path.exists(GOOGLE_CREDENTIALS_FILE)
-
-def google_token_exists() -> bool:
-    return os.path.exists(GOOGLE_TOKEN_FILE)
-
-def get_google_service():
-    """Return an authenticated Google People API service, or None."""
-    if not google_token_exists():
-        return None
-    try:
-        from google.oauth2.credentials import Credentials
-        from google.auth.transport.requests import Request as GRequest
-        from googleapiclient.discovery import build
-
-        creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_FILE, GOOGLE_SCOPES)
-        if creds.expired and creds.refresh_token:
-            creds.refresh(GRequest())
-            with open(GOOGLE_TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
-        return build("people", "v1", credentials=creds, cache_discovery=False)
-    except Exception as exc:
-        logger.warning("Google auth error: %s", exc)
-        return None
 
 def load_google_cache() -> dict:
     try:
@@ -248,60 +236,13 @@ def load_google_cache() -> dict:
     except Exception:
         return {}
 
-def sync_google_contacts() -> tuple[dict, int]:
-    """Fetch all Google contacts, cache phone→name map, update contact labels.
-    Returns (name_map, count_fetched)."""
-    service = get_google_service()
-    if not service:
-        return {}, 0
-
-    name_map: dict[str, str] = {}
-    try:
-        page_token = None
-        while True:
-            kwargs = dict(resourceName="people/me", pageSize=1000,
-                          personFields="names,phoneNumbers")
-            if page_token:
-                kwargs["pageToken"] = page_token
-            result = service.people().connections().list(**kwargs).execute()
-            for person in result.get("connections", []):
-                names = person.get("names", [])
-                if not names:
-                    continue
-                display_name = names[0].get("displayName", "")
-                for ph in person.get("phoneNumbers", []):
-                    key = normalize_phone(ph.get("value", ""))
-                    if key:
-                        name_map[key] = display_name
-            page_token = result.get("nextPageToken")
-            if not page_token:
-                break
-    except Exception as exc:
-        logger.warning("Error fetching Google contacts: %s", exc)
-        return {}, 0
-
-    # Cache on disk
-    Path(GOOGLE_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
-    with open(GOOGLE_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(name_map, f, ensure_ascii=False)
-
-    # Update labels in contacts.json where phone matches
-    contacts = load_contacts()
-    for c in contacts:
-        phone_key = normalize_phone(c["chatId"].split("@")[0])
-        if phone_key in name_map:
-            c["label"] = name_map[phone_key]
-    save_contacts(contacts)
-
-    return name_map, len(name_map)
-
 
 def _waha_headers() -> dict:
     return {"X-Api-Key": WAHA_API_KEY, "Content-Type": "application/json"}
 
 
 _NOWEB_SESSION_CONFIG = {
-    "noweb": {"store": {"enabled": True, "fullSync": True}}
+    "noweb": {"markOnline": True, "store": {"enabled": True, "fullSync": True}}
 }
 
 
@@ -440,7 +381,7 @@ def index():
 
     conn = get_db()
     people = conn.execute(
-        "SELECT * FROM people ORDER BY hebrew_month, hebrew_day"
+        "SELECT * FROM people ORDER BY last_name, first_name"
     ).fetchall()
     conn.close()
 
@@ -461,20 +402,22 @@ def index():
 
 @app.route("/add", methods=["POST"])
 def add_person():
-    name = request.form.get("name", "").strip()
+    first_name = request.form.get("first_name", "").strip()
+    last_name = request.form.get("last_name", "").strip()
+    name = f"{first_name} {last_name}".strip()
     hebrew_day = request.form.get("hebrew_day", type=int)
     hebrew_month = request.form.get("hebrew_month", type=int)
     notes = request.form.get("notes", "").strip()
     gender = request.form.get("gender", "").strip()
 
-    if not name or not hebrew_day or not hebrew_month:
-        flash("Please fill in name, day, and month.", "danger")
+    if not first_name or not hebrew_day or not hebrew_month:
+        flash("Please fill in first name, day, and month.", "danger")
         return redirect(url_for("index"))
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO people (name, hebrew_day, hebrew_month, notes, gender) VALUES (?, ?, ?, ?, ?)",
-        (name, hebrew_day, hebrew_month, notes, gender),
+        "INSERT INTO people (name, first_name, last_name, hebrew_day, hebrew_month, notes, gender) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (name, first_name, last_name, hebrew_day, hebrew_month, notes, gender),
     )
     conn.commit()
     conn.close()
@@ -486,14 +429,16 @@ def add_person():
 def edit_person(pid):
     conn = get_db()
     if request.method == "POST":
-        name = request.form.get("name", "").strip()
+        first_name = request.form.get("first_name", "").strip()
+        last_name = request.form.get("last_name", "").strip()
+        name = f"{first_name} {last_name}".strip()
         hebrew_day = request.form.get("hebrew_day", type=int)
         hebrew_month = request.form.get("hebrew_month", type=int)
         notes = request.form.get("notes", "").strip()
         gender = request.form.get("gender", "").strip()
         conn.execute(
-            "UPDATE people SET name=?, hebrew_day=?, hebrew_month=?, notes=?, gender=? WHERE id=?",
-            (name, hebrew_day, hebrew_month, notes, gender, pid),
+            "UPDATE people SET name=?, first_name=?, last_name=?, hebrew_day=?, hebrew_month=?, notes=?, gender=? WHERE id=?",
+            (name, first_name, last_name, hebrew_day, hebrew_month, notes, gender, pid),
         )
         conn.commit()
         conn.close()
@@ -643,11 +588,73 @@ def admin_contacts():
                          headers=_waha_headers(), timeout=15,
                          params={"limit": 1000, "offset": 0})
         all_chats = r.json() or []
-        if isinstance(all_chats, dict):  # error envelope instead of list
+        if isinstance(all_chats, dict):
             chats_error = all_chats.get("message", str(all_chats))
             all_chats = []
     except Exception as exc:
         chats_error = str(exc)
+
+    # Also fetch WAHA contacts list to catch people not in recent chats
+    all_wa_contacts = []
+    try:
+        rc = requests.get(f"{WAHA_URL}/api/contacts/all",
+                          headers=_waha_headers(), timeout=15,
+                          params={"session": WAHA_SESSION})
+        if rc.ok:
+            all_wa_contacts = rc.json() or []
+            if isinstance(all_wa_contacts, dict):
+                all_wa_contacts = []
+    except Exception:
+        pass
+
+    # Fetch lids (phone number mappings) — available even when chats/contacts are empty
+    all_lids = []
+    try:
+        rl = requests.get(f"{WAHA_URL}/api/{WAHA_SESSION}/lids",
+                          headers=_waha_headers(), timeout=15,
+                          params={"limit": 500})
+        if rl.ok:
+            all_lids = rl.json() or []
+            if isinstance(all_lids, dict):
+                all_lids = []
+    except Exception:
+        pass
+
+    # Build a set of chat IDs already covered by chats list
+    chat_ids_seen = {c.get("id", "") for c in all_chats if c.get("id")}
+
+    # Add contacts not in chat list as stub entries
+    for wc in all_wa_contacts:
+        cid = wc.get("id", "")
+        if not cid or cid in chat_ids_seen or cid.endswith("@broadcast") or cid.endswith("@g.us"):
+            continue
+        all_chats.append({"id": cid, "name": wc.get("name", ""), "isGroup": False})
+        chat_ids_seen.add(cid)
+
+    # Add lids (phone contacts) not yet covered
+    for lid_entry in all_lids:
+        pn = lid_entry.get("pn", "")
+        if not pn or pn in chat_ids_seen or pn.endswith("@broadcast") or pn.endswith("@g.us"):
+            continue
+        all_chats.append({"id": pn, "name": "", "isGroup": False})
+        chat_ids_seen.add(pn)
+
+    # Fetch groups separately — groups API returns a dict keyed by group ID
+    try:
+        rg = requests.get(f"{WAHA_URL}/api/{WAHA_SESSION}/groups",
+                          headers=_waha_headers(), timeout=15,
+                          params={"limit": 500})
+        if rg.ok:
+            groups_data = rg.json() or {}
+            if isinstance(groups_data, dict):
+                for gid, ginfo in groups_data.items():
+                    if gid in chat_ids_seen:
+                        continue
+                    subject = ginfo.get("subject", "") if isinstance(ginfo, dict) else ""
+                    all_chats.append({"id": gid, "name": subject, "isGroup": True})
+                    chat_ids_seen.add(gid)
+    except Exception:
+        pass
 
     enriched = []
     for chat in all_chats:
@@ -663,24 +670,56 @@ def admin_contacts():
         display     = google_name or waha_name or ""
 
         existing = contact_map.get(cid, {})
+        manual_label = existing.get("label", "")
         enriched.append({
             "chatId":      cid,
-            "displayName": display,
+            "displayName": manual_label or display,
+            "autoName":    display,
+            "manualLabel": manual_label,
             "phone":       phone,
             "isGroup":     is_group,
             "birthday":    existing.get("birthday", False),
             "omer":        existing.get("omer", False),
         })
 
-    # Groups first, then alphabetically by display name / phone
-    enriched.sort(key=lambda x: (not x["isGroup"], (x["displayName"] or x["phone"]).lower()))
+    # Always show contacts already saved in contacts.json, even when WAHA returns nothing
+    enriched_ids = {e["chatId"] for e in enriched}
+    for saved in contacts:
+        cid = saved.get("chatId", "")
+        if not cid or cid in enriched_ids:
+            continue
+        phone    = cid.split("@")[0]
+        is_group = cid.endswith("@g.us")
+        label    = saved.get("label", "")
+        enriched.append({
+            "chatId":      cid,
+            "displayName": label or phone,
+            "autoName":    "",
+            "manualLabel": label,
+            "phone":       phone,
+            "isGroup":     is_group,
+            "birthday":    saved.get("birthday", False),
+            "omer":        saved.get("omer", False),
+        })
+
+    # Groups first, then named contacts A-Z by first word (= last name in "Last, First" format)
+    # then unnamed contacts (raw phone numbers) at the bottom
+    def _sort_key(x):
+        name = x["displayName"]
+        is_unnamed = not name or re.match(r'^[\d\s\+\-\(\)]+$', name)
+        if is_unnamed:
+            return (not x["isGroup"], 2, "", "")
+        words = name.strip().split()
+        primary   = words[0].lower().rstrip(",")   # last name (before the comma)
+        secondary = words[1].lower().rstrip(",") if len(words) > 1 else ""
+        return (not x["isGroup"], 1, primary, secondary)
+
+    enriched.sort(key=_sort_key)
 
     return render_template(
         "contacts.html",
         chats=enriched,
         chats_error=chats_error,
-        google_connected=google_token_exists(),
-        google_creds_exist=google_creds_exist(),
     )
 
 
@@ -700,7 +739,7 @@ def toggle_contact():
 
     if existing:
         existing[flag] = value
-        if not existing.get("birthday") and not existing.get("omer"):
+        if not existing.get("birthday") and not existing.get("omer") and not existing.get("label"):
             contacts = [c for c in contacts if c["chatId"] != chat_id]
     elif value:
         contacts.append({"label": label, "chatId": chat_id,
@@ -710,52 +749,69 @@ def toggle_contact():
     return jsonify({"ok": True})
 
 
-@app.route("/admin/google-auth")
-def google_auth():
-    if not google_creds_exist():
-        flash("Upload google_credentials.json to /data/ first, then try again.", "danger")
-        return redirect(url_for("admin_contacts"))
-    from google_auth_oauthlib.flow import Flow
-    flow = Flow.from_client_secrets_file(
-        GOOGLE_CREDENTIALS_FILE, scopes=GOOGLE_SCOPES,
-        redirect_uri=GOOGLE_REDIRECT_URI)
-    auth_url, state = flow.authorization_url(access_type="offline",
-                                              include_granted_scopes="true",
-                                              prompt="consent")
-    session["google_oauth_state"] = state
-    return redirect(auth_url)
+@app.route("/admin/contacts/set-label", methods=["POST"])
+def set_contact_label():
+    data    = request.get_json() or {}
+    chat_id = data.get("chatId", "")
+    label   = data.get("label", "").strip()
 
+    if not chat_id:
+        return jsonify({"ok": False, "error": "no chatId"}), 400
 
-@app.route("/admin/google-callback")
-def google_callback():
-    from google_auth_oauthlib.flow import Flow
-    state = session.get("google_oauth_state", "")
-    flow = Flow.from_client_secrets_file(
-        GOOGLE_CREDENTIALS_FILE, scopes=GOOGLE_SCOPES,
-        state=state, redirect_uri=GOOGLE_REDIRECT_URI)
-    flow.fetch_token(authorization_response=request.url)
-    with open(GOOGLE_TOKEN_FILE, "w") as f:
-        f.write(flow.credentials.to_json())
-    flash("Google Contacts connected! Syncing now…", "success")
-    # Trigger an immediate sync
-    _, count = sync_google_contacts()
-    flash(f"Imported {count} Google contact names.", "success")
-    return redirect(url_for("admin_contacts"))
+    contacts = load_contacts()
+    existing = next((c for c in contacts if c["chatId"] == chat_id), None)
 
+    if existing:
+        existing["label"] = label
+        if not existing.get("birthday") and not existing.get("omer") and not label:
+            contacts = [c for c in contacts if c["chatId"] != chat_id]
+    elif label:
+        contacts.append({"label": label, "chatId": chat_id, "birthday": False, "omer": False})
 
-@app.route("/admin/google-sync", methods=["POST"])
-def google_sync():
-    _, count = sync_google_contacts()
-    if count:
-        flash(f"Synced {count} Google contact names.", "success")
-    else:
-        flash("Could not fetch Google contacts — is the account connected?", "warning")
-    return redirect(url_for("admin_contacts"))
+    save_contacts(contacts)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+
+def waha_health_check():
+    """Ensure the WAHA session is running with the correct config. Called every 5 minutes."""
+    try:
+        r = requests.get(f"{WAHA_URL}/api/sessions/{WAHA_SESSION}", headers=_waha_headers(), timeout=10)
+        if not r.ok:
+            # Session gone — recreate it
+            requests.post(
+                f"{WAHA_URL}/api/sessions",
+                headers=_waha_headers(),
+                json={"name": WAHA_SESSION, "config": _NOWEB_SESSION_CONFIG},
+                timeout=10,
+            )
+            logger.warning("WAHA session missing — recreated")
+            return
+        data   = r.json()
+        status = data.get("status", "STOPPED")
+        config = data.get("config") or {}
+        store_ok = (config.get("noweb") or {}).get("store", {}).get("enabled", False)
+        if not store_ok:
+            requests.put(
+                f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
+                headers=_waha_headers(),
+                json={"config": _NOWEB_SESSION_CONFIG},
+                timeout=10,
+            )
+            logger.warning("WAHA session config was missing store — restored")
+        elif status == "STOPPED":
+            requests.post(
+                f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start",
+                headers=_waha_headers(),
+                timeout=10,
+            )
+            logger.warning("WAHA session was STOPPED — restarted")
+    except Exception as exc:
+        logger.warning("WAHA health check failed: %s", exc)
+
 
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
@@ -763,6 +819,13 @@ def start_scheduler():
         run_daily_check,
         CronTrigger(hour=NOTIFICATION_HOUR, minute=NOTIFICATION_MINUTE, timezone=TIMEZONE),
         id="daily_birthday_check",
+        replace_existing=True,
+    )
+    from apscheduler.triggers.interval import IntervalTrigger
+    scheduler.add_job(
+        waha_health_check,
+        IntervalTrigger(minutes=5),
+        id="waha_health_check",
         replace_existing=True,
     )
     scheduler.start()
