@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Birthday Bot</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
   <style>
     body { background: #f8f9fa; }
@@ -117,6 +117,16 @@
             </div>
 
             <div class="mb-3">
+              <label class="form-label">סוג אירוע</label>
+              <select class="form-select" name="event_type">
+                <option value="יום הולדת" selected>יום הולדת</option>
+                <option value="יום נישואין">יום נישואין</option>
+                <option value="יום פטירה">יום פטירה</option>
+                <option value="אחר">אחר</option>
+              </select>
+            </div>
+
+            <div class="mb-3">
               <label class="form-label">Notes <small class="text-muted">(optional)</small></label>
               <input type="text" class="form-control" name="notes"
                      placeholder="e.g. send flowers">
@@ -128,6 +138,15 @@
                 <option value="">— not specified —</option>
                 <option value="M">M — Male</option>
                 <option value="F">F — Female</option>
+              </select>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label">Group <small class="text-muted">(optional)</small></label>
+              <select class="form-select" name="group_type">
+                <option value="">— not specified —</option>
+                <option value="close_family">Close Family</option>
+                <option value="other">Other</option>
               </select>
             </div>
 
@@ -147,17 +166,27 @@
       <!-- Upcoming (next 30 days) -->
       {% if upcoming %}
       <div class="card shadow-sm mt-4">
-        <div class="card-header bg-info text-white">
-          <i class="bi bi-calendar-event"></i> Upcoming (next 30 days)
+        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-calendar-event"></i> אירועים לשלושים הימים הבאים</span>
+          <button class="btn btn-sm btn-light" id="sendUpcomingBtn" onclick="sendUpcomingList()">
+            <i class="bi bi-whatsapp"></i> שלח
+          </button>
         </div>
         <ul class="list-group list-group-flush">
           {% for p in upcoming %}
           <li class="list-group-item upcoming-soon d-flex justify-content-between align-items-start">
             <div>
-              <strong>{{ p.name }}</strong>
+              <strong>{{ p.first_name }} {{ p.last_name or '' }}</strong>
               <div class="small text-muted">
-                {{ p.next_hebrew_date }} · {{ p.next_gregorian }}
+                {{ p.event_type or 'יום הולדת' }}
+                {% if p.years_count is not none and p.years_count >= 0 %}
+                  · <strong>שנה {{ p.years_count }}</strong>
+                {% elif p.years_count is none %}
+                  · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠ הוסף שנה</a>
+                {% endif %}
               </div>
+              <div class="small">{{ p.next_hebrew_date_he }}</div>
+              <div class="small text-muted">{{ p.next_gregorian }}</div>
             </div>
             <span class="badge bg-info text-dark">{{ p.days_until }}d</span>
           </li>
@@ -181,28 +210,40 @@
           <table class="table table-hover align-middle mb-0">
             <thead class="table-light">
               <tr>
-                <th>First Name</th>
-                <th>Last Name</th>
-                <th>Hebrew Birthday</th>
-                <th>Gender</th>
-                <th>Notes</th>
+                <th>Name</th>
+                <th>Date</th>
+                <th>In</th>
+                <th>Event</th>
+                <th>Group</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {% for p in people %}
               <tr>
-                <td><strong>{{ p.first_name }}</strong></td>
-                <td>{{ p.last_name or '' }}</td>
+                <td>
+                  <strong>{{ p.first_name }}</strong> {{ p.last_name or '' }}
+                  {% if p.gender == 'M' %}<span class="badge bg-primary ms-1">M</span>
+                  {% elif p.gender == 'F' %}<span class="badge bg-danger ms-1">F</span>
+                  {% endif %}
+                  {% if p.notes %}<div class="small text-muted">{{ p.notes }}</div>{% endif %}
+                </td>
                 <td>
                   <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
+                  {% if p.hebrew_year %}<div class="small text-muted">{{ p.hebrew_year }}</div>{% endif %}
                 </td>
                 <td class="text-center">
-                  {% if p.gender == 'M' %}<span class="badge bg-primary">M</span>
-                  {% elif p.gender == 'F' %}<span class="badge bg-danger">F</span>
+                  {% set d = p.days_until %}
+                  {% if d == 0 %}<span class="badge bg-warning text-dark">Today!</span>
+                  {% else %}<span class="badge bg-light text-dark border">{{ d }}d</span>
                   {% endif %}
                 </td>
-                <td class="text-muted small">{{ p.notes or '' }}</td>
+                <td class="small">{{ p.event_type or 'יום הולדת' }}</td>
+                <td class="text-center">
+                  {% if p.group_type == 'close_family' %}<span class="badge bg-success">משפחה</span>
+                  {% elif p.group_type == 'other' %}<span class="badge bg-secondary">אחר</span>
+                  {% endif %}
+                </td>
                 <td class="text-end">
                   <a href="/edit/{{ p.id }}" class="btn btn-sm btn-outline-secondary me-1">
                     <i class="bi bi-pencil"></i>
@@ -299,6 +340,28 @@ function buildDayOptions(monthSelectId, daySelectId, preselect) {
 window.addEventListener('DOMContentLoaded', () => {
   onYearChange('addYear', 'addMonth', 'addDay');
 });
+
+async function sendUpcomingList() {
+  const btn = document.getElementById('sendUpcomingBtn');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  btn.disabled = true;
+  try {
+    const res  = await fetch('/api/send-upcoming-list', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      btn.innerHTML = '<i class="bi bi-check-lg"></i> נשלח!';
+      btn.classList.replace('btn-light', 'btn-success');
+      setTimeout(() => { btn.innerHTML = orig; btn.classList.replace('btn-success','btn-light'); btn.disabled = false; }, 3000);
+    } else {
+      alert('שגיאה: ' + (data.error || 'שליחה נכשלה'));
+      btn.innerHTML = orig; btn.disabled = false;
+    }
+  } catch (err) {
+    alert('שגיאת רשת');
+    btn.innerHTML = orig; btn.disabled = false;
+  }
+}
 
 async function checkToday(e) {
   e.preventDefault();

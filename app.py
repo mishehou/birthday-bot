@@ -103,8 +103,11 @@ def init_db():
             last_name   TEXT    NOT NULL DEFAULT '',
             hebrew_day  INTEGER NOT NULL,
             hebrew_month INTEGER NOT NULL,
+            hebrew_year INTEGER,
             notes       TEXT,
             gender      TEXT    DEFAULT '',
+            group_type  TEXT    DEFAULT '',
+            event_type  TEXT    DEFAULT 'יום הולדת',
             created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -113,6 +116,9 @@ def init_db():
         "ALTER TABLE people ADD COLUMN gender TEXT DEFAULT ''",
         "ALTER TABLE people ADD COLUMN first_name TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE people ADD COLUMN last_name TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE people ADD COLUMN group_type TEXT DEFAULT ''",
+        "ALTER TABLE people ADD COLUMN hebrew_year INTEGER",
+        "ALTER TABLE people ADD COLUMN event_type TEXT DEFAULT 'יום הולדת'",
     ]:
         try:
             conn.execute(col_def)
@@ -159,6 +165,56 @@ def format_hebrew_date(day: int, month: int, year: int | None = None) -> str:
     return f"{day} {name}"
 
 
+_HEB_ONES   = ['', 'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט']
+_HEB_TENS   = ['', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ']
+_HEB_HUNDREDS = ['', 'ק', 'ר', 'ש', 'ת', 'תק', 'תר', 'תש', 'תת', 'תתק']
+
+def int_to_hebrew_numeral(n: int, geresh: bool = True) -> str:
+    """Convert a positive integer to Hebrew numeral letters (drop thousands)."""
+    n = n % 1000  # drop thousands (e.g. 5786 → 786)
+    hundreds, rem = divmod(n, 100)
+    result = _HEB_HUNDREDS[hundreds]
+    if rem == 15:
+        result += 'טו'
+    elif rem == 16:
+        result += 'טז'
+    else:
+        tens, ones = divmod(rem, 10)
+        result += _HEB_TENS[tens] + _HEB_ONES[ones]
+    if geresh:
+        if len(result) > 1:
+            result = result[:-1] + '״' + result[-1]  # gershayim ״ before last letter
+        elif len(result) == 1:
+            result += '׳'  # geresh ׳
+    return result
+
+
+def format_hebrew_date_he(day: int, month: int, year: int) -> str:
+    """Return a fully Hebrew-lettered date, e.g. כ״ח אייר תשפ״ו"""
+    return f"{int_to_hebrew_numeral(day, geresh=False)} {HEBREW_MONTHS_HE[month]} {int_to_hebrew_numeral(year)}"
+
+
+def compute_days_until(hday: int, hmonth: int) -> int:
+    """Return days until the next occurrence of this Hebrew date (0 = today)."""
+    today = date.today()
+    h_today = HebrewDate.from_pydate(today)
+    for year_offset in range(2):
+        check_year = h_today.year + year_offset
+        month_to_use = hmonth
+        if hmonth == 12 and is_leap_year(check_year):
+            month_to_use = 13
+        elif hmonth == 13 and not is_leap_year(check_year):
+            month_to_use = 12
+        try:
+            next_date = HebrewDate(check_year, month_to_use, hday).to_pydate()
+            delta = (next_date - today).days
+            if delta >= 0:
+                return delta
+        except Exception:
+            pass
+    return 365
+
+
 def get_people_with_birthday_on(hday: int, hmonth: int, hyear: int) -> list[dict]:
     """Return all people whose Hebrew birthday falls on (hday, hmonth) in hyear."""
     months_to_check = {hmonth}
@@ -189,7 +245,12 @@ def get_upcoming_birthdays(days_ahead: int = 30) -> list[dict]:
         for p in people:
             p["days_until"] = delta
             p["next_hebrew_date"] = format_hebrew_date(h.day, h.month, h.year)
-            p["next_gregorian"] = check_date.strftime("%Y-%m-%d")
+            p["next_hebrew_date_he"] = format_hebrew_date_he(h.day, h.month, h.year)
+            p["next_gregorian"] = check_date.strftime("%d/%m/%Y")
+            if p.get("hebrew_year") is not None:
+                p["years_count"] = h.year - p["hebrew_year"]
+            else:
+                p["years_count"] = None
             upcoming.append(p)
 
     return upcoming
@@ -199,9 +260,11 @@ def get_upcoming_birthdays(days_ahead: int = 30) -> list[dict]:
 # Notification — WhatsApp via WAHA (self-hosted, linked device)
 # ---------------------------------------------------------------------------
 
-WAHA_URL     = os.environ.get("WAHA_URL", "http://waha:3000")
-WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "birthday-bot-key")
-WAHA_SESSION = "default"
+WAHA_URL          = os.environ.get("WAHA_URL", "http://waha:3000")
+WAHA_API_KEY      = os.environ.get("WAHA_API_KEY", "birthday-bot-key")
+WAHA_SESSION      = "default"
+WEBHOOK_URL       = os.environ.get("WEBHOOK_URL", "http://birthday-bot:5000/webhook")
+COMMAND_GROUP_NAME = os.environ.get("COMMAND_GROUP_NAME", "Group for Test")
 
 # ── Shared contacts store ────────────────────────────────────────────────────
 
@@ -242,8 +305,15 @@ def _waha_headers() -> dict:
 
 
 _NOWEB_SESSION_CONFIG = {
-    "noweb": {"markOnline": True, "store": {"enabled": True, "fullSync": True}}
+    "noweb": {"markOnline": True, "store": {"enabled": True, "fullSync": True}},
+    "webhooks": [{"url": WEBHOOK_URL, "events": ["*"]}],
 }
+
+
+def _config_needs_update(config: dict) -> bool:
+    store_ok   = (config.get("noweb") or {}).get("store", {}).get("enabled", False)
+    webhook_ok = any(w.get("url") == WEBHOOK_URL for w in (config.get("webhooks") or []))
+    return not store_ok or not webhook_ok
 
 
 def ensure_whatsapp_instance() -> bool:
@@ -253,10 +323,8 @@ def ensure_whatsapp_instance() -> bool:
         if r.ok:
             data = r.json()
             status = data.get("status", "STOPPED")
-            config = data.get("config") or {}          # null config → treat as empty
-            store_enabled = (config.get("noweb") or {}).get("store", {}).get("enabled", False)
-            if not store_enabled:
-                # Config missing or store not enabled — update config (WAHA will restart session)
+            config = data.get("config") or {}
+            if _config_needs_update(config):
                 requests.put(
                     f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
                     headers=_waha_headers(),
@@ -380,10 +448,12 @@ def index():
     today_str = format_hebrew_date(hday, hmonth, hyear)
 
     conn = get_db()
-    people = conn.execute(
-        "SELECT * FROM people ORDER BY last_name, first_name"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM people").fetchall()
     conn.close()
+    people_dicts = [dict(r) for r in rows]
+    for p in people_dicts:
+        p["days_until"] = compute_days_until(p["hebrew_day"], p["hebrew_month"])
+    people = sorted(people_dicts, key=lambda p: p["days_until"])
 
     todays_birthdays = get_people_with_birthday_on(hday, hmonth, hyear)
     upcoming = get_upcoming_birthdays(days_ahead=30)
@@ -409,6 +479,9 @@ def add_person():
     hebrew_month = request.form.get("hebrew_month", type=int)
     notes = request.form.get("notes", "").strip()
     gender = request.form.get("gender", "").strip()
+    group_type = request.form.get("group_type", "").strip()
+    event_type = request.form.get("event_type", "יום הולדת").strip()
+    hebrew_year = request.form.get("hebrew_year_ui", type=int)
 
     if not first_name or not hebrew_day or not hebrew_month:
         flash("Please fill in first name, day, and month.", "danger")
@@ -416,8 +489,8 @@ def add_person():
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO people (name, first_name, last_name, hebrew_day, hebrew_month, notes, gender) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (name, first_name, last_name, hebrew_day, hebrew_month, notes, gender),
+        "INSERT INTO people (name, first_name, last_name, hebrew_day, hebrew_month, hebrew_year, notes, gender, group_type, event_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, first_name, last_name, hebrew_day, hebrew_month, hebrew_year, notes, gender, group_type, event_type),
     )
     conn.commit()
     conn.close()
@@ -436,9 +509,12 @@ def edit_person(pid):
         hebrew_month = request.form.get("hebrew_month", type=int)
         notes = request.form.get("notes", "").strip()
         gender = request.form.get("gender", "").strip()
+        group_type = request.form.get("group_type", "").strip()
+        event_type = request.form.get("event_type", "יום הולדת").strip()
+        hebrew_year = request.form.get("hebrew_year_ui", type=int)
         conn.execute(
-            "UPDATE people SET name=?, first_name=?, last_name=?, hebrew_day=?, hebrew_month=?, notes=?, gender=? WHERE id=?",
-            (name, first_name, last_name, hebrew_day, hebrew_month, notes, gender, pid),
+            "UPDATE people SET name=?, first_name=?, last_name=?, hebrew_day=?, hebrew_month=?, hebrew_year=?, notes=?, gender=?, group_type=?, event_type=? WHERE id=?",
+            (name, first_name, last_name, hebrew_day, hebrew_month, hebrew_year, notes, gender, group_type, event_type, pid),
         )
         conn.commit()
         conn.close()
@@ -522,6 +598,120 @@ def api_check_today():
     hyear, hmonth, hday = today_hebrew()
     people = get_people_with_birthday_on(hday, hmonth, hyear)
     return jsonify({"date": format_hebrew_date(hday, hmonth, hyear), "birthdays": people})
+
+
+_EVENT_ICONS = {
+    "יום הולדת":  "🎂",
+    "יום נישואין": "💒",
+    "יום פטירה":  "🕯️",
+    "אחר":        "📌",
+}
+
+
+def build_upcoming_message(days_ahead: int = 30) -> str | None:
+    """Return the upcoming-events WhatsApp message, or None if no events."""
+    upcoming = get_upcoming_birthdays(days_ahead=days_ahead)
+    if not upcoming:
+        return None
+    lines = [f"📅 *אירועים ל-{days_ahead} הימים הבאים*", ""]
+    for p in upcoming:
+        event    = p.get("event_type") or "יום הולדת"
+        icon     = _EVENT_ICONS.get(event, "📌")
+        name     = f"{p['first_name']} {p.get('last_name') or ''}".strip()
+        years    = p.get("years_count")
+        year_str = f" (שנה {years})" if years is not None and years >= 0 else ""
+        if p["days_until"] == 0:
+            when = "היום! 🎉"
+        elif p["days_until"] == 1:
+            when = "מחר"
+        else:
+            when = f"בעוד {p['days_until']} ימים"
+        lines.append(f"{icon} *{name}* — {event}{year_str}")
+        lines.append(f"   {p['next_hebrew_date_he']}  |  {p['next_gregorian']}")
+        lines.append(f"   {when}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+@app.route("/api/send-upcoming-list", methods=["POST"])
+def send_upcoming_list():
+    message = build_upcoming_message()
+    if not message:
+        return jsonify({"ok": False, "error": "אין אירועים בשלושים הימים הבאים"})
+
+    recipients = [c for c in load_contacts() if c.get("birthday")]
+    if not recipients:
+        return jsonify({"ok": False, "error": "לא הוגדרו נמענים לרשימת יום הולדת"})
+
+    all_ok = True
+    for c in recipients:
+        try:
+            resp = requests.post(
+                f"{WAHA_URL}/api/sendText",
+                headers=_waha_headers(),
+                json={"chatId": c["chatId"], "text": message, "session": WAHA_SESSION},
+                timeout=15,
+            )
+            if not resp.ok:
+                logger.error("send-upcoming-list error for %s: %s", c.get("label"), resp.text[:200])
+                all_ok = False
+        except Exception as exc:
+            logger.error("send-upcoming-list failed for %s: %s", c.get("label"), exc)
+            all_ok = False
+
+    return jsonify({"ok": all_ok, "count": len(recipients)})
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data    = request.get_json(silent=True) or {}
+    event   = data.get("event", "")
+    payload = data.get("payload", {})
+    # WAHA uses "message.any" for all messages (including sent by linked device)
+    if event not in ("message", "message.any"):
+        return jsonify({"ok": True})
+
+    body    = (payload.get("body") or "").strip()
+    chat_id = payload.get("from", "") or payload.get("chatId", "")
+
+    logger.info("WEBHOOK event=%s chat=%s body=%r fromMe=%s", event, chat_id, body[:50], payload.get("fromMe"))
+
+    # Match /upcoming or /upcoming<N>
+    m = re.match(r'^/upcoming(\d+)?$', body, re.IGNORECASE)
+    if not m or not chat_id.endswith("@g.us"):
+        return jsonify({"ok": True})
+    suffix = m.group(1)
+    days_ahead = int(suffix) if suffix and int(suffix) < 30 else 30
+
+    # Optionally verify the group name — if lookup fails or returns empty, allow through
+    try:
+        rg = requests.get(
+            f"{WAHA_URL}/api/{WAHA_SESSION}/groups",
+            headers=_waha_headers(), timeout=10,
+        )
+        if rg.ok:
+            groups = rg.json() or {}
+            group_info = groups.get(chat_id, {}) if isinstance(groups, dict) else {}
+            subject = (group_info.get("subject", "") if isinstance(group_info, dict) else "")
+            if subject and COMMAND_GROUP_NAME.lower() not in subject.lower():
+                logger.info("Ignoring /upcoming from unrecognised group: %s (%s)", chat_id, subject)
+                return jsonify({"ok": True})
+    except Exception as exc:
+        logger.warning("Could not verify group name: %s — proceeding anyway", exc)
+
+    message = build_upcoming_message(days_ahead=days_ahead) or "📅 אין אירועים בטווח הימים המבוקש"
+    try:
+        requests.post(
+            f"{WAHA_URL}/api/sendText",
+            headers=_waha_headers(),
+            json={"chatId": chat_id, "text": message, "session": WAHA_SESSION},
+            timeout=15,
+        )
+        logger.info("Sent /upcoming reply to group %s", chat_id)
+    except Exception as exc:
+        logger.error("Webhook reply failed: %s", exc)
+
+    return jsonify({"ok": True})
 
 
 @app.route("/test")
@@ -793,15 +983,14 @@ def waha_health_check():
         data   = r.json()
         status = data.get("status", "STOPPED")
         config = data.get("config") or {}
-        store_ok = (config.get("noweb") or {}).get("store", {}).get("enabled", False)
-        if not store_ok:
+        if _config_needs_update(config):
             requests.put(
                 f"{WAHA_URL}/api/sessions/{WAHA_SESSION}",
                 headers=_waha_headers(),
                 json={"config": _NOWEB_SESSION_CONFIG},
                 timeout=10,
             )
-            logger.warning("WAHA session config was missing store — restored")
+            logger.warning("WAHA session config updated (store/webhook)")
         elif status == "STOPPED":
             requests.post(
                 f"{WAHA_URL}/api/sessions/{WAHA_SESSION}/start",
