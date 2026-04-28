@@ -9,6 +9,9 @@
   <style>
     body { background: #f8f9fa; }
     .card { border-radius: 12px; }
+    @media (max-width: 767.98px) {
+      .label-input { width: 100% !important; max-width: 100% !important; }
+    }
     .badge-group    { background:#6610f2; color:#fff; font-size:.7rem; padding:2px 7px; border-radius:20px; }
     .badge-contact  { background:#0dcaf0; color:#000; font-size:.7rem; padding:2px 7px; border-radius:20px; }
     tr.hidden { display:none; }
@@ -24,8 +27,8 @@
     <span class="navbar-brand"><i class="bi bi-person-lines-fill"></i> WhatsApp Contacts</span>
     <div class="d-flex align-items-center gap-3">
       <a href="/" class="btn btn-sm btn-outline-light"><i class="bi bi-cake2"></i> Birthdays</a>
-      <a href="/test" class="btn btn-sm btn-warning"><i class="bi bi-send-check"></i> Test birthday send</a>
-      <a href="http://192.168.0.37:5051/test" class="btn btn-sm btn-info text-dark"><i class="bi bi-send-check"></i> Test Omer send</a>
+      <a href="/test" class="btn btn-sm btn-warning d-none d-md-inline-flex"><i class="bi bi-send-check"></i> Test birthday send</a>
+      <a href="http://192.168.0.37:5051/test" class="btn btn-sm btn-info text-dark d-none d-md-inline-flex"><i class="bi bi-send-check"></i> Test Omer send</a>
       <a href="/whatsapp-setup" class="btn btn-sm btn-outline-light"><i class="bi bi-whatsapp"></i> Status</a>
     </div>
   </div>
@@ -67,7 +70,7 @@
         <thead class="table-light">
           <tr>
             <th>Name <small class="text-muted fw-normal">(editable)</small></th>
-            <th>Chat ID / Phone</th>
+            <th class="d-none d-md-table-cell">Chat ID / Phone</th>
             <th class="text-center">🎂 Birthday</th>
             <th class="text-center">✡️ Omer</th>
           </tr>
@@ -87,7 +90,7 @@
                      value="{{ c.displayName }}"
                      placeholder="{{ c.phone }}">
             </td>
-            <td class="id-cell" title="{{ c.chatId }}">{{ c.chatId }}</td>
+            <td class="id-cell d-none d-md-table-cell" title="{{ c.chatId }}">{{ c.chatId }}</td>
             <td class="text-center">
               <input type="checkbox" class="toggle-check"
                      data-chat-id="{{ c.chatId }}"

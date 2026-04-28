@@ -223,6 +223,9 @@ def get_people_with_birthday_on(hday: int, hmonth: int, hyear: int) -> list[dict
     # Adar II (13) in a leap year also covers people stored with plain Adar (12)
     if hmonth == 13 and is_leap_year(hyear):
         months_to_check.add(12)
+    # Plain Adar (12) in a non-leap year also covers people stored as Adar II (13)
+    elif hmonth == 12 and not is_leap_year(hyear):
+        months_to_check.add(13)
 
     conn = get_db()
     placeholders = ",".join("?" for _ in months_to_check)
@@ -637,14 +640,22 @@ def build_upcoming_message(days_ahead: int = 30) -> str | None:
 
 def build_month_message(month: int) -> str | None:
     """Return a WhatsApp message for all events in Hebrew month *month*, or None if none."""
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM people WHERE hebrew_month = ? ORDER BY hebrew_day", (month,)
-    ).fetchall()
-    conn.close()
-
     today = date.today()
     h_today = HebrewDate.from_pydate(today)
+    current_leap = is_leap_year(h_today.year)
+
+    if not current_leap and month in (12, 13):
+        months_to_query = (12, 13)
+    else:
+        months_to_query = (month,)
+
+    conn = get_db()
+    placeholders = ",".join("?" for _ in months_to_query)
+    rows = conn.execute(
+        f"SELECT * FROM people WHERE hebrew_month IN ({placeholders}) ORDER BY hebrew_day",
+        months_to_query,
+    ).fetchall()
+    conn.close()
     items = []
     for row in rows:
         p = dict(row)
@@ -727,7 +738,8 @@ def send_month_events(month):
 
 @app.route("/api/send-upcoming-list", methods=["POST"])
 def send_upcoming_list():
-    message = build_upcoming_message()
+    days = request.args.get("days", 30, type=int)
+    message = build_upcoming_message(days_ahead=days)
     if not message:
         return jsonify({"ok": False, "error": "אין אירועים בשלושים הימים הבאים"})
 
@@ -860,15 +872,23 @@ def api_month_events(month):
     if month < 1 or month > 13:
         return jsonify({"error": "invalid month"}), 400
 
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM people WHERE hebrew_month = ? ORDER BY hebrew_day",
-        (month,),
-    ).fetchall()
-    conn.close()
-
     today = date.today()
     h_today = HebrewDate.from_pydate(today)
+    current_leap = is_leap_year(h_today.year)
+
+    # In a non-leap year there is only one Adar; show both Adar I and Adar II stored people
+    if not current_leap and month in (12, 13):
+        months_to_query = (12, 13)
+    else:
+        months_to_query = (month,)
+
+    conn = get_db()
+    placeholders = ",".join("?" for _ in months_to_query)
+    rows = conn.execute(
+        f"SELECT * FROM people WHERE hebrew_month IN ({placeholders}) ORDER BY hebrew_day",
+        months_to_query,
+    ).fetchall()
+    conn.close()
     result = []
     for row in rows:
         p = dict(row)
@@ -1200,6 +1220,8 @@ def start_scheduler():
         )
         logger.info("DB backup scheduled at 03:00 and 10:30 → %s", BACKUP_DIR)
     scheduler.start()
+    if BACKUP_DIR:
+        backup_database()
     logger.info(
         "Scheduler started — daily check at %02d:%02d %s",
         NOTIFICATION_HOUR, NOTIFICATION_MINUTE, TIMEZONE,
