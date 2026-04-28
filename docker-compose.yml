@@ -53,7 +53,9 @@ services:
       SECRET_KEY:            ${SECRET_KEY:-change-me}
       DATABASE_PATH:         /data/birthdays.db
       CONTACTS_FILE:         /data/contacts.json
-      GOOGLE_REDIRECT_URI:   ${GOOGLE_REDIRECT_URI:-http://localhost:5050/admin/google-callback}
+      GOOGLE_CLIENT_ID:      ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET:  ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI:   ${GOOGLE_REDIRECT_URI:-https://birthday.mishehou.org/auth/google/callback}
       OAUTHLIB_INSECURE_TRANSPORT: "1"
     networks:
       - whatsapp-net

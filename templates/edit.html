@@ -12,6 +12,16 @@
 <nav class="navbar navbar-dark bg-dark mb-4">
   <div class="container">
     <a class="navbar-brand" href="/"><i class="bi bi-cake2"></i> Hebrew Birthday Bot</a>
+    <div class="d-flex align-items-center gap-2">
+      {% if session.user_picture %}
+        <img src="{{ session.user_picture }}" style="width:28px;height:28px;border-radius:50%;object-fit:cover" alt="">
+      {% endif %}
+      <span class="text-light small d-none d-md-inline">{{ session.user_name or session.user_email }}</span>
+      {% if session.user_role == 'administrator' %}
+      <a href="/admin/users" class="btn btn-sm btn-outline-warning"><i class="bi bi-people-fill"></i></a>
+      {% endif %}
+      <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="bi bi-box-arrow-right"></i></a>
+    </div>
   </div>
 </nav>
 
