@@ -3,9 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Birthday Bot</title>
+  <title>ציון תאריכים לפי תאריך עברי</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="manifest" href="/manifest.json">
   <style>
     body { background: #f8f9fa; }
     .card { border-radius: 12px; }
@@ -28,14 +31,25 @@
 <body>
 <nav class="navbar navbar-dark bg-dark mb-4">
   <div class="container">
-    <span class="navbar-brand"><i class="bi bi-cake2"></i> Hebrew Birthday Bot</span>
-    <div class="d-flex align-items-center gap-3">
+    <span class="navbar-brand"><i class="bi bi-cake2"></i> ציון תאריכים לפי תאריך עברי</span>
+    <div class="d-flex align-items-center gap-2">
       <span class="text-light small d-none d-md-inline">Today: {{ today_str }}</span>
-      <a href="/admin/contacts" class="btn btn-sm btn-outline-light me-1">
+      {% if session.user_role == 'administrator' %}
+      <a href="/admin/users" class="btn btn-sm btn-outline-light">
+        <i class="bi bi-shield-lock"></i>
+      </a>
+      <a href="/admin/contacts" class="btn btn-sm btn-outline-light">
         <i class="bi bi-person-lines-fill"></i> Contacts
       </a>
+      {% endif %}
       <a href="/whatsapp-setup" class="btn btn-sm btn-outline-light">
-        <i class="bi bi-whatsapp"></i> WhatsApp
+        <i class="bi bi-whatsapp"></i>
+      </a>
+      {% if session.user_picture %}
+        <img src="{{ session.user_picture }}" style="width:28px;height:28px;border-radius:50%;object-fit:cover" alt="">
+      {% endif %}
+      <a href="/logout" class="btn btn-sm btn-outline-danger" title="התנתקות">
+        <i class="bi bi-box-arrow-right"></i>
       </a>
     </div>
   </div>
@@ -52,20 +66,22 @@
     {% endfor %}
   {% endwith %}
 
-  <!-- Today's Birthdays -->
+  <!-- Today's Events -->
   {% if todays_birthdays %}
+  {% set _icons = {'יום הולדת': '🎂', 'יום נישואין': '💍', 'יום פטירה': '🕯️', 'אחר': '📌'} %}
   <div class="card shadow-sm mb-4 birthday-today">
     <div class="card-body">
-      <h5 class="card-title"><i class="bi bi-balloon-heart-fill text-warning"></i> Today's Birthdays!</h5>
+      <h5 class="card-title mb-3" dir="rtl">אנחנו מציינים היום:</h5>
       {% for p in todays_birthdays %}
-        <div class="d-flex align-items-center gap-2 mb-1">
-          <i class="bi bi-gift-fill text-danger"></i>
-          <strong>{{ p.first_name }} {{ p.last_name }}</strong>
-          <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
-          {% if p.notes %}<small class="text-muted">— {{ p.notes }}</small>{% endif %}
+        {% set etype = p.event_type or 'יום הולדת' %}
+        <div class="d-flex align-items-center gap-2 mb-2" dir="rtl">
+          <span style="font-size:1.4rem;line-height:1">{{ _icons.get(etype, '📌') }}</span>
+          <strong>{{ p.first_name }} {{ p.last_name or '' }}</strong>
+          <span class="text-muted small">{{ etype }}</span>
+          {% if p.notes %}<small class="text-muted">· {{ p.notes }}</small>{% endif %}
           <button class="btn btn-sm btn-warning ms-auto" onclick="checkToday(event)"
                   title="Send WhatsApp notification now">
-            <i class="bi bi-whatsapp"></i> Send now
+            <i class="bi bi-whatsapp"></i>
           </button>
         </div>
       {% endfor %}
@@ -73,19 +89,27 @@
   </div>
   {% endif %}
 
+  {% if session.user_role in ('administrator', 'editor') %}
+  <div class="text-end mb-2">
+    <button class="btn btn-sm btn-outline-secondary" onclick="togglePeoplePanel()">
+      <i class="bi bi-people-fill"></i> ניהול אנשים
+    </button>
+  </div>
+  {% endif %}
+
   <div class="row g-4">
 
-    <div class="col-lg-5">
+    <div id="upcomingCol" class="col-12">
 
       <!-- Upcoming / month filter -->
       <div class="card shadow-sm">
         <div class="card-header bg-info text-white d-flex justify-content-between align-items-center flex-wrap gap-2">
-          <span><i class="bi bi-calendar-event"></i> אירועים לשלושים הימים הבאים</span>
+          <span><i class="bi bi-calendar-event"></i> אירועים החלים בתקופה שנבחרה</span>
           <div class="d-flex align-items-center gap-2">
             <select id="monthFilter" class="form-select form-select-sm" style="width:120px" onchange="onFilterChange()">
-              <option value="d5">— 5 ימים —</option>
+              <option value="d5" selected>— 5 ימים —</option>
               <option value="d10">— 10 ימים —</option>
-              <option value="" selected>— 30 ימים —</option>
+              <option value="">— 30 ימים —</option>
               {% for num, name in hebrew_months_he.items() %}
               <option value="{{ num }}">{{ name }}</option>
               {% endfor %}
@@ -104,8 +128,11 @@
                   <div><strong>{{ p.first_name }} {{ p.last_name or '' }}</strong></div>
                   <div class="small text-muted">
                     {{ p.event_type or 'יום הולדת' }}
-                    {% if p.years_count is not none and p.years_count >= 0 %}
-                      · <strong>שנה {{ p.years_count }}</strong>
+                    {% if p.years_count is not none and p.years_count >= 1 %}
+                      {% if p.years_count == 1 %}· <strong>שנה אחד</strong>
+                      {% elif p.years_count == 2 %}· <strong>שנתיים</strong>
+                      {% else %}· <strong>{{ p.years_count }} שנים</strong>
+                      {% endif %}
                     {% elif p.years_count is none %}
                       · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠</a>
                     {% endif %}
@@ -130,8 +157,8 @@
       </div>
     </div>
 
-    <!-- People List -->
-    <div class="col-lg-7">
+    <!-- People List (hidden by default) -->
+    <div id="peopleCol" class="col-lg-7 d-none">
       <div class="card shadow-sm">
         <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center flex-wrap gap-2">
           <span><i class="bi bi-people-fill"></i> All People ({{ people | length }})</span>
@@ -173,6 +200,7 @@
         </div>
         <div class="card-footer d-flex align-items-center justify-content-between py-2 bg-light">
           <span id="selectedName" class="small text-muted fst-italic">— select a person —</span>
+          {% if session.user_role in ('administrator', 'editor') %}
           <div class="d-flex gap-2">
             <button type="button" class="btn btn-sm btn-success"
                     data-bs-toggle="modal" data-bs-target="#addPersonModal">
@@ -186,6 +214,7 @@
               <i class="bi bi-trash"></i> Delete
             </button>
           </div>
+          {% endif %}
         </div>
         <form id="deleteForm" method="post" action="" class="d-none"></form>
         {% else %}
@@ -200,6 +229,7 @@
   </div><!-- /row -->
 </div><!-- /container -->
 
+{% if session.user_role in ('administrator', 'editor') %}
 <!-- Add Person Modal -->
 <div class="modal fade" id="addPersonModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
@@ -287,6 +317,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
@@ -419,24 +450,30 @@ function _esc(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-let _upcomingOriginalHTML = null;
+function togglePeoplePanel() {
+  const peopleCol   = document.getElementById('peopleCol');
+  const upcomingCol = document.getElementById('upcomingCol');
+  const hidden = peopleCol.classList.contains('d-none');
+  if (hidden) {
+    peopleCol.classList.remove('d-none');
+    upcomingCol.classList.remove('col-12');
+    upcomingCol.classList.add('col-lg-5');
+  } else {
+    peopleCol.classList.add('d-none');
+    upcomingCol.classList.remove('col-lg-5');
+    upcomingCol.classList.add('col-12');
+  }
+}
 
 async function onFilterChange() {
   const val    = document.getElementById('monthFilter').value;
   const listEl = document.getElementById('upcomingList');
 
-  if (_upcomingOriginalHTML === null) {
-    _upcomingOriginalHTML = listEl.innerHTML;
-  }
-
-  if (!val) {
-    listEl.innerHTML = _upcomingOriginalHTML;
-    return;
-  }
-
   listEl.innerHTML = '<li class="list-group-item text-center py-3"><span class="spinner-border spinner-border-sm"></span></li>';
 
-  const url = val.startsWith('d') ? `/api/upcoming?days=${val.slice(1)}` : `/api/month-events/${val}`;
+  const url = !val                  ? '/api/upcoming?days=30'
+            : val.startsWith('d')   ? `/api/upcoming?days=${val.slice(1)}`
+            :                         `/api/month-events/${val}`;
   try {
     const res    = await fetch(url);
     const people = await res.json();
@@ -449,8 +486,12 @@ async function onFilterChange() {
     listEl.innerHTML = people.map(p => {
       const name = [p.first_name, p.last_name].filter(Boolean).map(_esc).join(' ');
       let yearsHtml = '';
-      if (p.years_count !== null && p.years_count !== undefined && p.years_count >= 0) {
-        yearsHtml = `· <strong>שנה ${p.years_count}</strong>`;
+      if (p.years_count === 1) {
+        yearsHtml = `· <strong>שנה אחד</strong>`;
+      } else if (p.years_count === 2) {
+        yearsHtml = `· <strong>שנתיים</strong>`;
+      } else if (p.years_count > 2) {
+        yearsHtml = `· <strong>${p.years_count} שנים</strong>`;
       } else if (p.years_count === null || p.years_count === undefined) {
         yearsHtml = `· <a href="/edit/${p.id}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠</a>`;
       }

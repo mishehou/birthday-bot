@@ -1,16 +1,24 @@
+try:
+    from gevent import monkey as _gm; _gm.patch_all()
+except ImportError:
+    pass
+
 import os
 import re
 import json
 import logging
 import sqlite3
+import urllib.parse
 from datetime import date, timedelta
+from functools import wraps
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, jsonify, redirect, render_template, request, session, url_for
 from pyluach.dates import HebrewDate
 
 load_dotenv()
@@ -19,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "birthday-bot-secret")
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 DATABASE   = os.environ.get("DATABASE_PATH", "/data/birthdays.db")
@@ -26,6 +35,14 @@ BACKUP_DIR = os.environ.get("BACKUP_DIR", "")
 NOTIFICATION_HOUR = int(os.environ.get("NOTIFICATION_HOUR", "9"))
 NOTIFICATION_MINUTE = int(os.environ.get("NOTIFICATION_MINUTE", "0"))
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Jerusalem")
+
+GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI  = os.environ.get("GOOGLE_REDIRECT_URI", "https://birthday.mishehou.org/auth/google/callback")
+_GOOGLE_AUTH_URL     = "https://accounts.google.com/o/oauth2/v2/auth"
+_GOOGLE_TOKEN_URL    = "https://oauth2.googleapis.com/token"
+_GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+_https_pool          = ThreadPoolExecutor(max_workers=4)
 
 # Month numbering: Nisan=1, Iyar=2, ..., Tishrei=7, ..., Adar=12, Adar II=13
 HEBREW_MONTHS = {
@@ -97,6 +114,16 @@ def init_db():
     os.makedirs(os.path.dirname(DATABASE), exist_ok=True)
     conn = get_db()
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT    NOT NULL UNIQUE,
+            name       TEXT,
+            picture    TEXT,
+            role       TEXT    NOT NULL DEFAULT 'viewer',
+            last_login TIMESTAMP
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS people (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT    NOT NULL,
@@ -139,6 +166,52 @@ def init_db():
     conn.commit()
     conn.close()
     logger.info("Database initialised at %s", DATABASE)
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers + decorators
+# ---------------------------------------------------------------------------
+
+def get_user_by_email(email: str) -> dict | None:
+    conn = get_db()
+    row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_email"):
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_email"):
+            return redirect(url_for("login_page"))
+        if session.get("user_role") != "administrator":
+            flash("נדרשות הרשאות מנהל.", "danger")
+            return redirect(url_for("index"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def editor_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_email"):
+            return redirect(url_for("login_page"))
+        if session.get("user_role") not in ("administrator", "editor"):
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                return jsonify({"error": "read-only role"}), 403
+            flash("Your role is view-only. Contact an administrator to make changes.", "warning")
+            return redirect(url_for("index"))
+        return f(*args, **kwargs)
+    return decorated
 
 
 # ---------------------------------------------------------------------------
@@ -443,10 +516,201 @@ def run_daily_check():
 
 
 # ---------------------------------------------------------------------------
+# PWA assets
+# ---------------------------------------------------------------------------
+
+_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" fill="white"/>
+  <ellipse cx="50" cy="12" rx="5" ry="7" fill="#FF8C00"/>
+  <ellipse cx="50" cy="14" rx="3" ry="4" fill="#FFD700"/>
+  <line x1="50" y1="19" x2="50" y2="14" stroke="#555" stroke-width="1.5"/>
+  <rect x="46" y="19" width="8" height="15" rx="2" fill="#FFE066"/>
+  <path d="M25 34 Q31 28 37 34 Q43 28 49 34 Q55 28 61 34 Q67 28 73 34 L73 54 L25 54 Z" fill="#FF85A1"/>
+  <path d="M25 34 Q31 28 37 34 Q43 28 49 34 Q55 28 61 34 Q67 28 73 34" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M12 54 Q19 47 26 54 Q33 47 40 54 Q47 47 54 54 Q61 47 68 54 Q75 47 82 54 Q87 49 88 54 L88 84 L12 84 Z" fill="#FF6B9D"/>
+  <path d="M12 54 Q19 47 26 54 Q33 47 40 54 Q47 47 54 54 Q61 47 68 54 Q75 47 82 54 Q87 49 88 54" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="30" cy="70" r="3" fill="#FFE066"/>
+  <circle cx="50" cy="70" r="3" fill="#FFE066"/>
+  <circle cx="70" cy="70" r="3" fill="#FFE066"/>
+  <ellipse cx="50" cy="86" rx="40" ry="4" fill="#E0E0E0"/>
+</svg>"""
+
+@app.route("/icon.svg")
+def app_icon():
+    return Response(_ICON_SVG, mimetype="image/svg+xml")
+
+@app.route("/manifest.json")
+def pwa_manifest():
+    return jsonify({
+        "name": "ציון תאריכים לפי תאריך עברי",
+        "short_name": "ימי הולדת",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#212529",
+        "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}],
+    })
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
+@app.route("/login")
+def login_page():
+    if session.get("user_email"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+
+@app.route("/auth/google")
+def auth_google():
+    params = {
+        "client_id":     GOOGLE_CLIENT_ID,
+        "redirect_uri":  GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         "openid email profile",
+        "access_type":   "online",
+    }
+    return redirect(_GOOGLE_AUTH_URL + "?" + urllib.parse.urlencode(params))
+
+
+@app.route("/auth/google/callback")
+def auth_google_callback():
+    code  = request.args.get("code")
+    error = request.args.get("error")
+    if error or not code:
+        flash("Google sign-in cancelled or failed.", "danger")
+        return redirect(url_for("login_page"))
+
+    def _exchange(c):
+        tok = requests.post(_GOOGLE_TOKEN_URL, data={
+            "code": c, "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI, "grant_type": "authorization_code",
+        }, timeout=10)
+        tok.raise_for_status()
+        ui = requests.get(_GOOGLE_USERINFO_URL,
+                          headers={"Authorization": f"Bearer {tok.json()['access_token']}"},
+                          timeout=10)
+        ui.raise_for_status()
+        return ui.json()
+
+    try:
+        info = _https_pool.submit(_exchange, code).result(timeout=15)
+    except Exception as exc:
+        logger.error("Google OAuth error: %s", exc)
+        flash("Google sign-in failed — please try again.", "danger")
+        return redirect(url_for("login_page"))
+
+    email   = info.get("email", "").lower().strip()
+    name    = info.get("name", "")
+    picture = info.get("picture", "")
+
+    if not email:
+        flash("Could not retrieve email from Google.", "danger")
+        return redirect(url_for("login_page"))
+
+    user = get_user_by_email(email)
+    if user is None:
+        conn = get_db()
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        if count == 0:
+            conn.execute(
+                "INSERT INTO users (email, name, picture, role, last_login) VALUES (?, ?, ?, 'administrator', CURRENT_TIMESTAMP)",
+                (email, name, picture),
+            )
+            conn.commit()
+            conn.close()
+            user = {"role": "administrator"}
+        else:
+            conn.close()
+            return render_template("access_denied.html", email=email)
+    else:
+        conn = get_db()
+        conn.execute(
+            "UPDATE users SET name=?, picture=?, last_login=CURRENT_TIMESTAMP WHERE email=?",
+            (name, picture, email),
+        )
+        conn.commit()
+        conn.close()
+
+    session.permanent = True
+    session["user_email"]   = email
+    session["user_name"]    = name
+    session["user_picture"] = picture
+    session["user_role"]    = user["role"]
+    return redirect(url_for("index"))
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login_page"))
+
+
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+    conn = get_db()
+    users = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY role, email").fetchall()]
+    conn.close()
+    return render_template("admin_users.html", users=users,
+                           roles=["administrator", "editor", "viewer"],
+                           current_email=session.get("user_email", ""))
+
+
+@app.route("/admin/users/add", methods=["POST"])
+@admin_required
+def admin_users_add():
+    email = request.form.get("email", "").lower().strip()
+    role  = request.form.get("role", "viewer")
+    if role not in ("administrator", "editor", "viewer"):
+        role = "viewer"
+    if not email:
+        flash("Email is required.", "danger")
+        return redirect(url_for("admin_users"))
+    try:
+        conn = get_db()
+        conn.execute("INSERT OR IGNORE INTO users (email, role) VALUES (?, ?)", (email, role))
+        conn.commit()
+        conn.close()
+        flash(f"Added {email} as {role}.", "success")
+    except Exception as exc:
+        flash(f"Error: {exc}", "danger")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/update-role", methods=["POST"])
+@admin_required
+def admin_users_update_role():
+    uid  = request.form.get("id", type=int)
+    role = request.form.get("role", "viewer")
+    if role not in ("administrator", "editor", "viewer"):
+        role = "viewer"
+    conn = get_db()
+    conn.execute("UPDATE users SET role=? WHERE id=?", (role, uid))
+    conn.commit()
+    conn.close()
+    flash("Role updated.", "success")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/delete/<int:uid>", methods=["POST"])
+@admin_required
+def admin_users_delete(uid):
+    conn = get_db()
+    row = conn.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()
+    conn.execute("DELETE FROM users WHERE id=?", (uid,))
+    conn.commit()
+    conn.close()
+    if row:
+        flash(f"Removed {row['email']}.", "success")
+    return redirect(url_for("admin_users"))
+
+
 @app.route("/")
+@login_required
 def index():
     hyear, hmonth, hday = today_hebrew()
     today_str = format_hebrew_date(hday, hmonth, hyear)
@@ -460,7 +724,7 @@ def index():
     people = sorted(people_dicts, key=lambda p: p["days_until"])
 
     todays_birthdays = get_people_with_birthday_on(hday, hmonth, hyear)
-    upcoming = get_upcoming_birthdays(days_ahead=30)
+    upcoming = get_upcoming_birthdays(days_ahead=5)
 
     return render_template(
         "index.html",
@@ -476,6 +740,7 @@ def index():
 
 
 @app.route("/add", methods=["POST"])
+@editor_required
 def add_person():
     first_name = request.form.get("first_name", "").strip()
     last_name = request.form.get("last_name", "").strip()
@@ -504,6 +769,7 @@ def add_person():
 
 
 @app.route("/edit/<int:pid>", methods=["GET", "POST"])
+@editor_required
 def edit_person(pid):
     conn = get_db()
     if request.method == "POST":
@@ -541,6 +807,7 @@ def edit_person(pid):
 
 
 @app.route("/delete/<int:pid>", methods=["POST"])
+@editor_required
 def delete_person(pid):
     conn = get_db()
     row = conn.execute("SELECT name FROM people WHERE id=?", (pid,)).fetchone()
@@ -553,6 +820,7 @@ def delete_person(pid):
 
 
 @app.route("/whatsapp-setup")
+@login_required
 def whatsapp_setup():
     ensure_whatsapp_instance()
     status = whatsapp_connection_status()
@@ -597,6 +865,7 @@ def api_year_info(year):
 
 
 @app.route("/api/check-today")
+@login_required
 def api_check_today():
     """Manually trigger today's birthday check (also sends WhatsApp if configured)."""
     run_daily_check()
@@ -709,6 +978,7 @@ def build_month_message(month: int) -> str | None:
 
 
 @app.route("/api/send-month-events/<int:month>", methods=["POST"])
+@login_required
 def send_month_events(month):
     if month < 1 or month > 13:
         return jsonify({"ok": False, "error": "invalid month"}), 400
@@ -737,6 +1007,7 @@ def send_month_events(month):
 
 
 @app.route("/api/send-upcoming-list", methods=["POST"])
+@login_required
 def send_upcoming_list():
     days = request.args.get("days", 30, type=int)
     message = build_upcoming_message(days_ahead=days)
@@ -819,6 +1090,7 @@ def webhook():
 
 
 @app.route("/test")
+@login_required
 def test_send():
     """Send a test birthday message to all birthday-flagged contacts."""
     recipients = [c for c in load_contacts() if c.get("birthday")]
@@ -851,6 +1123,7 @@ def test_send():
 
 
 @app.route("/api/test-network")
+@login_required
 def api_test_network():
     """Test if this container can reach the internet."""
     try:
@@ -861,12 +1134,14 @@ def api_test_network():
 
 
 @app.route("/api/upcoming")
+@login_required
 def api_upcoming():
     days = request.args.get("days", 30, type=int)
     return jsonify(get_upcoming_birthdays(days_ahead=days))
 
 
 @app.route("/api/month-events/<int:month>")
+@login_required
 def api_month_events(month):
     """Return all people whose Hebrew event month equals *month*, ordered by day."""
     if month < 1 or month > 13:
@@ -934,6 +1209,7 @@ def api_month_events(month):
 # ---------------------------------------------------------------------------
 
 @app.route("/admin/contacts")
+@admin_required
 def admin_contacts():
     contacts     = load_contacts()
     contact_map  = {c["chatId"]: c for c in contacts}
@@ -1081,6 +1357,7 @@ def admin_contacts():
 
 
 @app.route("/admin/contacts/toggle", methods=["POST"])
+@admin_required
 def toggle_contact():
     data    = request.get_json() or {}
     chat_id = data.get("chatId", "")
@@ -1107,6 +1384,7 @@ def toggle_contact():
 
 
 @app.route("/admin/contacts/set-label", methods=["POST"])
+@admin_required
 def set_contact_label():
     data    = request.get_json() or {}
     chat_id = data.get("chatId", "")
