@@ -21,7 +21,8 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "birthday-bot-secret")
 
 
-DATABASE = os.environ.get("DATABASE_PATH", "/data/birthdays.db")
+DATABASE   = os.environ.get("DATABASE_PATH", "/data/birthdays.db")
+BACKUP_DIR = os.environ.get("BACKUP_DIR", "")
 NOTIFICATION_HOUR = int(os.environ.get("NOTIFICATION_HOUR", "9"))
 NOTIFICATION_MINUTE = int(os.environ.get("NOTIFICATION_MINUTE", "0"))
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Jerusalem")
@@ -603,7 +604,7 @@ def api_check_today():
 
 _EVENT_ICONS = {
     "יום הולדת":  "🎂",
-    "יום נישואין": "💒",
+    "יום נישואין": "💍",
     "יום פטירה":  "🕯️",
     "אחר":        "📌",
 }
@@ -1148,6 +1149,27 @@ def waha_health_check():
         logger.warning("WAHA health check failed: %s", exc)
 
 
+def backup_database():
+    """Copy the live DB to BACKUP_DIR using SQLite's online backup API. Keep 30 daily copies."""
+    if not BACKUP_DIR:
+        return
+    backup_dir = Path(BACKUP_DIR)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    dest = backup_dir / f"birthdays-{date.today().isoformat()}.db"
+    try:
+        src = sqlite3.connect(DATABASE)
+        dst = sqlite3.connect(str(dest))
+        src.backup(dst)
+        dst.close()
+        src.close()
+        logger.info("DB backed up to %s", dest)
+        for old in sorted(backup_dir.glob("birthdays-*.db"))[:-30]:
+            old.unlink()
+            logger.info("Removed old backup: %s", old)
+    except Exception as exc:
+        logger.error("DB backup failed: %s", exc)
+
+
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
     scheduler.add_job(
@@ -1163,6 +1185,20 @@ def start_scheduler():
         id="waha_health_check",
         replace_existing=True,
     )
+    if BACKUP_DIR:
+        scheduler.add_job(
+            backup_database,
+            CronTrigger(hour=3, minute=0, timezone=TIMEZONE),
+            id="db_backup_night",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            backup_database,
+            CronTrigger(hour=10, minute=30, timezone=TIMEZONE),
+            id="db_backup_morning",
+            replace_existing=True,
+        )
+        logger.info("DB backup scheduled at 03:00 and 10:30 → %s", BACKUP_DIR)
     scheduler.start()
     logger.info(
         "Scheduler started — daily check at %02d:%02d %s",
