@@ -163,51 +163,68 @@
         </div>
       </div>
 
-      <!-- Upcoming (next 30 days) -->
-      {% if upcoming %}
+      <!-- Upcoming (next 30 days) / month filter -->
       <div class="card shadow-sm mt-4">
-        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center flex-wrap gap-2">
           <span><i class="bi bi-calendar-event"></i> אירועים לשלושים הימים הבאים</span>
-          <button class="btn btn-sm btn-light" id="sendUpcomingBtn" onclick="sendUpcomingList()">
-            <i class="bi bi-whatsapp"></i> שלח
-          </button>
+          <div class="d-flex align-items-center gap-2">
+            <select id="monthFilter" class="form-select form-select-sm" style="width:120px" onchange="onMonthFilter()">
+              <option value="">— 30 ימים —</option>
+              {% for num, name in hebrew_months_he.items() %}
+              <option value="{{ num }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-sm btn-light" id="sendUpcomingBtn" onclick="sendUpcomingList()">
+              <i class="bi bi-whatsapp"></i> שלח
+            </button>
+          </div>
         </div>
-        <ul class="list-group list-group-flush">
-          {% for p in upcoming %}
-          <li class="list-group-item upcoming-soon d-flex justify-content-between align-items-start">
-            <div>
-              <strong>{{ p.first_name }} {{ p.last_name or '' }}</strong>
-              <div class="small text-muted">
-                {{ p.event_type or 'יום הולדת' }}
-                {% if p.years_count is not none and p.years_count >= 0 %}
-                  · <strong>שנה {{ p.years_count }}</strong>
-                {% elif p.years_count is none %}
-                  · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠ הוסף שנה</a>
-                {% endif %}
+        <ul class="list-group list-group-flush" id="upcomingList">
+          {% if upcoming %}
+            {% for p in upcoming %}
+            <li class="list-group-item upcoming-soon d-flex justify-content-between align-items-start">
+              <div>
+                <strong>{{ p.first_name }} {{ p.last_name or '' }}</strong>
+                <div class="small text-muted">
+                  {{ p.event_type or 'יום הולדת' }}
+                  {% if p.years_count is not none and p.years_count >= 0 %}
+                    · <strong>שנה {{ p.years_count }}</strong>
+                  {% elif p.years_count is none %}
+                    · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠ הוסף שנה</a>
+                  {% endif %}
+                </div>
+                <div class="small">{{ p.next_hebrew_date_he }}</div>
+                <div class="small text-muted">{{ p.next_gregorian }}</div>
               </div>
-              <div class="small">{{ p.next_hebrew_date_he }}</div>
-              <div class="small text-muted">{{ p.next_gregorian }}</div>
-            </div>
-            <span class="badge bg-info text-dark">{{ p.days_until }}d</span>
-          </li>
-          {% endfor %}
+              <span class="badge bg-info text-dark">{{ p.days_until }}d</span>
+            </li>
+            {% endfor %}
+          {% else %}
+            <li class="list-group-item text-center text-muted py-3">אין אירועים ב-30 הימים הקרובים</li>
+          {% endif %}
         </ul>
       </div>
-      {% endif %}
     </div>
 
     <!-- People List -->
     <div class="col-lg-7">
       <div class="card shadow-sm">
-        <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+        <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center flex-wrap gap-2">
           <span><i class="bi bi-people-fill"></i> All People ({{ people | length }})</span>
-          <button class="btn btn-sm btn-light" id="checkBtn" onclick="checkToday(event)">
-            <i class="bi bi-send-check"></i> Test today's check
-          </button>
+          <div class="d-flex gap-2 align-items-center">
+            <input id="peopleSearch" type="text" class="form-control form-control-sm"
+                   style="width:150px" placeholder="חיפוש שם…" oninput="filterPeople()">
+            <button class="btn btn-sm btn-outline-light" onclick="clearPeopleSearch()" title="איפוס">
+              <i class="bi bi-x-lg"></i>
+            </button>
+            <button class="btn btn-sm btn-light" id="checkBtn" onclick="checkToday(event)">
+              <i class="bi bi-send-check"></i> Test today's check
+            </button>
+          </div>
         </div>
         {% if people %}
         <div class="table-responsive">
-          <table class="table table-hover align-middle mb-0">
+          <table class="table table-hover align-middle mb-0" id="peopleTable">
             <thead class="table-light">
               <tr>
                 <th>Name</th>
@@ -220,7 +237,7 @@
             </thead>
             <tbody>
               {% for p in people %}
-              <tr>
+              <tr data-name="{{ (p.first_name ~ ' ' ~ (p.last_name or ''))|lower }}">
                 <td>
                   <strong>{{ p.first_name }}</strong> {{ p.last_name or '' }}
                   {% if p.gender == 'M' %}<span class="badge bg-primary ms-1">M</span>
@@ -342,12 +359,14 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 async function sendUpcomingList() {
-  const btn = document.getElementById('sendUpcomingBtn');
-  const orig = btn.innerHTML;
+  const month = document.getElementById('monthFilter').value;
+  const url   = month ? `/api/send-month-events/${month}` : '/api/send-upcoming-list';
+  const btn   = document.getElementById('sendUpcomingBtn');
+  const orig  = btn.innerHTML;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
   btn.disabled = true;
   try {
-    const res  = await fetch('/api/send-upcoming-list', { method: 'POST' });
+    const res  = await fetch(url, { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
       btn.innerHTML = '<i class="bi bi-check-lg"></i> נשלח!';
@@ -360,6 +379,74 @@ async function sendUpcomingList() {
   } catch (err) {
     alert('שגיאת רשת');
     btn.innerHTML = orig; btn.disabled = false;
+  }
+}
+
+function filterPeople() {
+  const q = document.getElementById('peopleSearch').value.toLowerCase();
+  document.querySelectorAll('#peopleTable tbody tr').forEach(row => {
+    row.classList.toggle('d-none', q.length > 0 && !(row.dataset.name || '').includes(q));
+  });
+}
+
+function clearPeopleSearch() {
+  document.getElementById('peopleSearch').value = '';
+  filterPeople();
+}
+
+function _esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let _upcomingOriginalHTML = null;
+
+async function onMonthFilter() {
+  const month  = document.getElementById('monthFilter').value;
+  const listEl = document.getElementById('upcomingList');
+
+  if (_upcomingOriginalHTML === null) {
+    _upcomingOriginalHTML = listEl.innerHTML;
+  }
+
+  if (!month) {
+    listEl.innerHTML = _upcomingOriginalHTML;
+    return;
+  }
+
+  listEl.innerHTML = '<li class="list-group-item text-center py-3"><span class="spinner-border spinner-border-sm"></span></li>';
+
+  try {
+    const res    = await fetch(`/api/month-events/${month}`);
+    const people = await res.json();
+
+    if (!people.length) {
+      listEl.innerHTML = '<li class="list-group-item text-center text-muted py-3">אין אירועים בחודש זה</li>';
+      return;
+    }
+
+    listEl.innerHTML = people.map(p => {
+      const name = [p.first_name, p.last_name].filter(Boolean).map(_esc).join(' ');
+      let yearsHtml = '';
+      if (p.years_count !== null && p.years_count !== undefined && p.years_count >= 0) {
+        yearsHtml = `· <strong>שנה ${p.years_count}</strong>`;
+      } else if (p.years_count === null || p.years_count === undefined) {
+        yearsHtml = `· <a href="/edit/${p.id}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠ הוסף שנה</a>`;
+      }
+      const badge = p.days_until === 0
+        ? `<span class="badge bg-warning text-dark">היום!</span>`
+        : `<span class="badge bg-info text-dark">${p.days_until}d</span>`;
+      return `<li class="list-group-item upcoming-soon d-flex justify-content-between align-items-start">
+        <div>
+          <strong>${name}</strong>
+          <div class="small text-muted">${_esc(p.event_type || 'יום הולדת')} ${yearsHtml}</div>
+          <div class="small">${_esc(p.next_hebrew_date_he)}</div>
+          <div class="small text-muted">${_esc(p.next_gregorian)}</div>
+        </div>
+        ${badge}
+      </li>`;
+    }).join('');
+  } catch (err) {
+    listEl.innerHTML = '<li class="list-group-item text-danger text-center py-2">שגיאה בטעינת הנתונים</li>';
   }
 }
 

@@ -465,6 +465,7 @@ def index():
         todays_birthdays=todays_birthdays,
         upcoming=upcoming,
         hebrew_months=HEBREW_MONTHS,
+        hebrew_months_he=HEBREW_MONTHS_HE,
         month_days_info=MONTH_DAYS_INFO,
         current_hebrew_year=hyear,
     )
@@ -633,6 +634,96 @@ def build_upcoming_message(days_ahead: int = 30) -> str | None:
     return "\n".join(lines).rstrip()
 
 
+def build_month_message(month: int) -> str | None:
+    """Return a WhatsApp message for all events in Hebrew month *month*, or None if none."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM people WHERE hebrew_month = ? ORDER BY hebrew_day", (month,)
+    ).fetchall()
+    conn.close()
+
+    today = date.today()
+    h_today = HebrewDate.from_pydate(today)
+    items = []
+    for row in rows:
+        p = dict(row)
+        next_hdate = None
+        for year_offset in range(2):
+            cy = h_today.year + year_offset
+            m = p["hebrew_month"]
+            if m == 12 and is_leap_year(cy):
+                m = 13
+            elif m == 13 and not is_leap_year(cy):
+                m = 12
+            try:
+                hd = HebrewDate(cy, m, p["hebrew_day"])
+                if (hd.to_pydate() - today).days >= 0:
+                    next_hdate = hd
+                    break
+            except Exception:
+                pass
+        if next_hdate is None:
+            continue
+        greg = next_hdate.to_pydate()
+        days_until = (greg - today).days
+        years = (next_hdate.year - p["hebrew_year"]) if p.get("hebrew_year") is not None else None
+        items.append({**p, "days_until": days_until,
+                      "next_hebrew_date_he": format_hebrew_date_he(next_hdate.day, next_hdate.month, next_hdate.year),
+                      "next_gregorian": greg.strftime("%d/%m/%Y"), "years_count": years})
+
+    if not items:
+        return None
+
+    items.sort(key=lambda x: x["days_until"])
+    month_name_he = HEBREW_MONTHS_HE.get(month, str(month))
+    lines = [f"📅 *אירועים בחודש {month_name_he}*", ""]
+    for p in items:
+        event    = p.get("event_type") or "יום הולדת"
+        icon     = _EVENT_ICONS.get(event, "📌")
+        name     = f"{p['first_name']} {p.get('last_name') or ''}".strip()
+        years    = p.get("years_count")
+        year_str = f" (שנה {years})" if years is not None and years >= 0 else ""
+        if p["days_until"] == 0:
+            when = "היום! 🎉"
+        elif p["days_until"] == 1:
+            when = "מחר"
+        else:
+            when = f"בעוד {p['days_until']} ימים"
+        lines.append(f"{icon} *{name}* — {event}{year_str}")
+        lines.append(f"   {p['next_hebrew_date_he']}  |  {p['next_gregorian']}")
+        lines.append(f"   {when}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+@app.route("/api/send-month-events/<int:month>", methods=["POST"])
+def send_month_events(month):
+    if month < 1 or month > 13:
+        return jsonify({"ok": False, "error": "invalid month"}), 400
+    message = build_month_message(month)
+    if not message:
+        return jsonify({"ok": False, "error": "אין אירועים בחודש זה"})
+    recipients = [c for c in load_contacts() if c.get("birthday")]
+    if not recipients:
+        return jsonify({"ok": False, "error": "לא הוגדרו נמענים לרשימת יום הולדת"})
+    all_ok = True
+    for c in recipients:
+        try:
+            resp = requests.post(
+                f"{WAHA_URL}/api/sendText",
+                headers=_waha_headers(),
+                json={"chatId": c["chatId"], "text": message, "session": WAHA_SESSION},
+                timeout=15,
+            )
+            if not resp.ok:
+                logger.error("send-month-events error for %s: %s", c.get("label"), resp.text[:200])
+                all_ok = False
+        except Exception as exc:
+            logger.error("send-month-events failed for %s: %s", c.get("label"), exc)
+            all_ok = False
+    return jsonify({"ok": all_ok, "count": len(recipients)})
+
+
 @app.route("/api/send-upcoming-list", methods=["POST"])
 def send_upcoming_list():
     message = build_upcoming_message()
@@ -760,6 +851,61 @@ def api_test_network():
 def api_upcoming():
     days = request.args.get("days", 30, type=int)
     return jsonify(get_upcoming_birthdays(days_ahead=days))
+
+
+@app.route("/api/month-events/<int:month>")
+def api_month_events(month):
+    """Return all people whose Hebrew event month equals *month*, ordered by day."""
+    if month < 1 or month > 13:
+        return jsonify({"error": "invalid month"}), 400
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM people WHERE hebrew_month = ? ORDER BY hebrew_day",
+        (month,),
+    ).fetchall()
+    conn.close()
+
+    today = date.today()
+    h_today = HebrewDate.from_pydate(today)
+    result = []
+    for row in rows:
+        p = dict(row)
+        next_hdate = None
+        for year_offset in range(2):
+            cy = h_today.year + year_offset
+            m = p["hebrew_month"]
+            if m == 12 and is_leap_year(cy):
+                m = 13
+            elif m == 13 and not is_leap_year(cy):
+                m = 12
+            try:
+                hd = HebrewDate(cy, m, p["hebrew_day"])
+                if (hd.to_pydate() - today).days >= 0:
+                    next_hdate = hd
+                    break
+            except Exception:
+                pass
+
+        if next_hdate is None:
+            continue
+
+        greg = next_hdate.to_pydate()
+        days_until = (greg - today).days
+        years = (next_hdate.year - p["hebrew_year"]) if p.get("hebrew_year") is not None else None
+        result.append({
+            "id": p["id"],
+            "first_name": p["first_name"],
+            "last_name": p.get("last_name") or "",
+            "event_type": p.get("event_type") or "יום הולדת",
+            "days_until": days_until,
+            "next_hebrew_date_he": format_hebrew_date_he(next_hdate.day, next_hdate.month, next_hdate.year),
+            "next_gregorian": greg.strftime("%d/%m/%Y"),
+            "years_count": years,
+        })
+
+    result.sort(key=lambda x: x["days_until"])
+    return jsonify(result)
 
 
 # ---------------------------------------------------------------------------
