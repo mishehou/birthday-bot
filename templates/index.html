@@ -31,9 +31,9 @@
     .card { border-radius: 12px; border-color: var(--sl-200); }
     .card-footer { background-color: var(--sl-50) !important; border-top-color: var(--sl-200); }
 
-    /* Today's events card — structured with slate header */
+    /* Today's events card */
     .birthday-today-header { background: var(--sl-700); color: #fff; }
-    .birthday-today-body   { background: var(--gold-bg); }
+    .birthday-today-body   { background: var(--sl-100); }
     .birthday-today-card   { border: 3px solid var(--sl-700); box-shadow: 0 4px 16px rgba(0,0,0,0.14) !important; }
 
     /* Upcoming list items */
@@ -148,13 +148,11 @@
                 {% elif p.years_count == 2 %}· <strong>שנתיים</strong>
                 {% else %}· <strong>{{ p.years_count }} שנים</strong>
                 {% endif %}
-              {% elif p.years_count is none %}
-                · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠</a>
               {% endif %}
             </div>
             {% if p.notes %}<div class="small text-muted">{{ p.notes }}</div>{% endif %}
           </div>
-          <button class="btn btn-sm btn-warning flex-shrink-0" onclick="checkToday(event)"
+          <button class="btn btn-sm btn-outline-secondary flex-shrink-0" onclick="checkToday(event)"
                   title="שלח התראת וואטסאפ">
             <i class="bi bi-whatsapp"></i>
           </button>
