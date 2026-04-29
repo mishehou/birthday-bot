@@ -12,7 +12,9 @@
   <style>
     body { background: #f8f9fa; }
     .card { border-radius: 12px; }
-    .birthday-today { background: #fff3cd; border-left: 4px solid #ffc107; }
+    .birthday-today-header { background: #495057; color: #fff; }
+    .birthday-today-body { background: #fff3cd; }
+    .birthday-today-card { border: 3px solid #495057; box-shadow: 0 4px 16px rgba(0,0,0,0.18) !important; }
     .upcoming-soon { background: #d1ecf1; border-left: 4px solid #17a2b8; }
     .month-badge {
       font-size: 0.75rem; font-weight: 600;
@@ -70,17 +72,32 @@
 
   <!-- Today's Events -->
   {% if todays_birthdays %}
-  <div class="card shadow-sm mb-4 birthday-today">
-    <div class="card-body">
-      <h5 class="card-title mb-3" dir="rtl">אנחנו מציינים היום:</h5>
+  <div class="card mb-4 birthday-today-card">
+    <div class="card-header birthday-today-header d-flex align-items-center gap-2">
+      <i class="bi bi-cake2"></i>
+      <strong>אנחנו מציינים היום:</strong>
+    </div>
+    <div class="card-body birthday-today-body py-2">
       {% for p in todays_birthdays %}
         {% set etype = p.event_type or 'יום הולדת' %}
-        <div class="d-flex align-items-center gap-2 mb-2" dir="rtl">
-          <span style="font-size:1.4rem;line-height:1">{{ _icons.get(etype, '📌') }}</span>
-          <strong>{{ p.first_name }} {{ p.last_name or '' }}</strong>
-          <span class="text-muted small">{{ etype }}</span>
-          {% if p.notes %}<small class="text-muted">· {{ p.notes }}</small>{% endif %}
-          <button class="btn btn-sm btn-warning ms-auto" onclick="checkToday(event)"
+        <div class="d-flex align-items-center gap-2 py-1 {% if not loop.last %}border-bottom border-warning{% endif %}" dir="rtl">
+          <span style="font-size:1.4rem;line-height:1;flex-shrink:0">{{ _icons.get(etype, '📌') }}</span>
+          <div class="flex-grow-1">
+            <div><strong>{{ p.first_name }} {{ p.last_name or '' }}</strong></div>
+            <div class="small text-muted">
+              {{ etype }}
+              {% if p.years_count is not none and p.years_count >= 1 %}
+                {% if p.years_count == 1 %}· <strong>שנה אחד</strong>
+                {% elif p.years_count == 2 %}· <strong>שנתיים</strong>
+                {% else %}· <strong>{{ p.years_count }} שנים</strong>
+                {% endif %}
+              {% elif p.years_count is none %}
+                · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠</a>
+              {% endif %}
+            </div>
+            {% if p.notes %}<div class="small text-muted">{{ p.notes }}</div>{% endif %}
+          </div>
+          <button class="btn btn-sm btn-warning flex-shrink-0" onclick="checkToday(event)"
                   title="Send WhatsApp notification now">
             <i class="bi bi-whatsapp"></i>
           </button>

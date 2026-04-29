@@ -729,6 +729,8 @@ def index():
     people = sorted(people_dicts, key=lambda p: p["days_until"])
 
     todays_birthdays = get_people_with_birthday_on(hday, hmonth, hyear)
+    for p in todays_birthdays:
+        p["years_count"] = (hyear - p["hebrew_year"]) if p.get("hebrew_year") is not None else None
     upcoming = get_upcoming_birthdays(days_ahead=5)
 
     return render_template(
