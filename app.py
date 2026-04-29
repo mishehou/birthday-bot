@@ -9,7 +9,8 @@ import json
 import logging
 import sqlite3
 import urllib.parse
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from functools import wraps
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -35,6 +36,10 @@ BACKUP_DIR = os.environ.get("BACKUP_DIR", "")
 NOTIFICATION_HOUR = int(os.environ.get("NOTIFICATION_HOUR", "9"))
 NOTIFICATION_MINUTE = int(os.environ.get("NOTIFICATION_MINUTE", "0"))
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Jerusalem")
+
+def _today() -> date:
+    """Current date in the configured local timezone (not UTC)."""
+    return datetime.now(tz=ZoneInfo(TIMEZONE)).date()
 
 GOOGLE_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -219,7 +224,7 @@ def editor_required(f):
 # ---------------------------------------------------------------------------
 
 def today_hebrew():
-    h = HebrewDate.today()
+    h = HebrewDate.from_pydate(_today())
     return h.year, h.month, h.day
 
 
@@ -270,7 +275,7 @@ def format_hebrew_date_he(day: int, month: int, year: int) -> str:
 
 def compute_days_until(hday: int, hmonth: int) -> int:
     """Return days until the next occurrence of this Hebrew date (0 = today)."""
-    today = date.today()
+    today = _today()
     h_today = HebrewDate.from_pydate(today)
     for year_offset in range(2):
         check_year = h_today.year + year_offset
@@ -313,7 +318,7 @@ def get_people_with_birthday_on(hday: int, hmonth: int, hyear: int) -> list[dict
 def get_upcoming_birthdays(days_ahead: int = 30) -> list[dict]:
     """Scan the next *days_ahead* days and return upcoming birthdays with days_until."""
     upcoming = []
-    today = date.today()
+    today = _today()
 
     for delta in range(1, days_ahead + 1):
         check_date = today + timedelta(days=delta)
@@ -909,7 +914,7 @@ def build_upcoming_message(days_ahead: int = 30) -> str | None:
 
 def build_month_message(month: int) -> str | None:
     """Return a WhatsApp message for all events in Hebrew month *month*, or None if none."""
-    today = date.today()
+    today = _today()
     h_today = HebrewDate.from_pydate(today)
     current_leap = is_leap_year(h_today.year)
 
@@ -1147,7 +1152,7 @@ def api_month_events(month):
     if month < 1 or month > 13:
         return jsonify({"error": "invalid month"}), 400
 
-    today = date.today()
+    today = _today()
     h_today = HebrewDate.from_pydate(today)
     current_leap = is_leap_year(h_today.year)
 
@@ -1453,7 +1458,7 @@ def backup_database():
         return
     backup_dir = Path(BACKUP_DIR)
     backup_dir.mkdir(parents=True, exist_ok=True)
-    dest = backup_dir / f"birthdays-{date.today().isoformat()}.db"
+    dest = backup_dir / f"birthdays-{_today().isoformat()}.db"
     try:
         src = sqlite3.connect(DATABASE)
         dst = sqlite3.connect(str(dest))
