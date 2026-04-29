@@ -93,9 +93,9 @@
 <body>
 <nav class="navbar navbar-dark bg-dark mb-4">
   <div class="container">
-    <span class="navbar-brand"><i class="bi bi-cake2"></i> ציון תאריכים לפי תאריך עברי</span>
+    <span class="navbar-brand"><i class="bi bi-cake2"></i><span class="d-none d-md-inline"> ציון תאריכים לפי תאריך עברי</span></span>
     <div class="d-flex align-items-center gap-2">
-      <span class="text-light small d-none d-md-inline">היום {{ today_str }}</span>
+      <span class="text-light small">היום {{ today_str }}</span>
       {% if session.user_role == 'administrator' %}
       <a href="/admin/users" class="btn btn-sm btn-outline-light">
         <i class="bi bi-shield-lock"></i>
@@ -103,10 +103,10 @@
       <a href="/admin/contacts" class="btn btn-sm btn-outline-light">
         <i class="bi bi-person-lines-fill"></i>
       </a>
-      {% endif %}
       <a href="/whatsapp-setup" class="btn btn-sm btn-outline-light">
         <i class="bi bi-whatsapp"></i>
       </a>
+      {% endif %}
       {% if session.user_picture %}
         <img src="{{ session.user_picture }}" style="width:28px;height:28px;border-radius:50%;object-fit:cover" alt="">
       {% endif %}
@@ -168,7 +168,7 @@
   {% if session.user_role in ('administrator', 'editor') %}
   <div class="text-end mb-2">
     <button class="btn btn-sm btn-outline-secondary" onclick="togglePeoplePanel()">
-      <i class="bi bi-people-fill"></i> ניהול אנשים
+      <i class="bi bi-calendar3"></i> ניהול אירועים
     </button>
   </div>
   {% endif %}
@@ -277,7 +277,7 @@
           {% endfor %}
         </div>
         <div class="card-footer d-flex align-items-center justify-content-between py-2 bg-light">
-          <span id="selectedName" class="small text-muted fst-italic">— בחר אדם —</span>
+          <span id="selectedName" class="small text-muted fst-italic">— בחר אירוע —</span>
           {% if session.user_role in ('administrator', 'editor') %}
           <div class="d-flex gap-2">
             <button type="button" class="btn btn-sm btn-success"
@@ -588,15 +588,18 @@ const EVENT_ICONS = {'יום הולדת': '🎂', 'יום נישואין': '💍
 function togglePeoplePanel() {
   const peopleCol   = document.getElementById('peopleCol');
   const upcomingCol = document.getElementById('upcomingCol');
+  const isMobile    = window.innerWidth < 992;
   const hidden = peopleCol.classList.contains('d-none');
   if (hidden) {
     peopleCol.classList.remove('d-none');
     upcomingCol.classList.remove('col-12');
     upcomingCol.classList.add('col-lg-5');
+    if (isMobile) upcomingCol.classList.add('d-none');
   } else {
     peopleCol.classList.add('d-none');
     upcomingCol.classList.remove('col-lg-5');
     upcomingCol.classList.add('col-12');
+    if (isMobile) upcomingCol.classList.remove('d-none');
   }
 }
 
@@ -679,5 +682,6 @@ async function checkToday(e) {
   }
 }
 </script>
+<p class="text-center" dir="ltr" style="font-size:0.55rem;padding:6px 0 2px;color:#b87333">© Ploni Almoni</p>
 </body>
 </html>
