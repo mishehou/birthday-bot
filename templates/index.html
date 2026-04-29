@@ -33,8 +33,11 @@
 
     /* Today's events card */
     .birthday-today-header { background: var(--sl-700); color: #fff; }
-    .birthday-today-body   { background: var(--sl-100); }
-    .birthday-today-card   { border: 3px solid var(--sl-700); box-shadow: 0 4px 16px rgba(0,0,0,0.14) !important; }
+    .birthday-today-body   { background: #cdd5da; }
+    .birthday-today-body > div { border-color: #b87333 !important; }
+    .birthday-today-body > div:first-child { border-top: 1px solid #b87333; }
+    .birthday-today-body > div:last-child  { border-bottom: 1px solid #b87333; }
+    .birthday-today-card   { border: 5px solid #b87333; box-shadow: 0 4px 20px rgba(184,115,51,0.35) !important; }
 
     /* Upcoming list items */
     .upcoming-soon { background: #fff; border-left: 4px solid var(--sl-300); }
@@ -92,7 +95,7 @@
   <div class="container">
     <span class="navbar-brand"><i class="bi bi-cake2"></i> ציון תאריכים לפי תאריך עברי</span>
     <div class="d-flex align-items-center gap-2">
-      <span class="text-light small d-none d-md-inline">היום: {{ today_str }}</span>
+      <span class="text-light small d-none d-md-inline">היום {{ today_str }}</span>
       {% if session.user_role == 'administrator' %}
       <a href="/admin/users" class="btn btn-sm btn-outline-light">
         <i class="bi bi-shield-lock"></i>
@@ -130,9 +133,11 @@
   <!-- Today's Events -->
   {% if todays_birthdays %}
   <div class="card mb-4 birthday-today-card">
-    <div class="card-header birthday-today-header d-flex align-items-center gap-2">
-      <i class="bi bi-cake2"></i>
-      <strong>אנחנו מציינים היום:</strong>
+    <div class="card-header birthday-today-header d-flex align-items-center justify-content-between gap-2">
+      <span><i class="bi bi-cake2"></i> <strong>אנחנו מציינים היום:</strong></span>
+      <button class="btn btn-sm btn-light" onclick="shareTodayCard()" title="שתף כתמונה">
+        <i class="bi bi-share-fill"></i>
+      </button>
     </div>
     <div class="card-body birthday-today-body py-2">
       {% for p in todays_birthdays %}
@@ -143,19 +148,17 @@
             <div><strong>{{ p.first_name }} {{ p.last_name or '' }}</strong></div>
             <div class="small text-muted">
               {{ etype }}
-              {% if p.years_count is not none and p.years_count >= 1 %}
-                {% if p.years_count == 1 %}· <strong>שנה אחד</strong>
-                {% elif p.years_count == 2 %}· <strong>שנתיים</strong>
-                {% else %}· <strong>{{ p.years_count }} שנים</strong>
+              {% set yc = p.get('years_count') %}
+              {% if yc is not none and yc >= 1 %}
+                {% if yc == 1 %}· <strong>שנה אחת</strong>
+                {% elif yc == 2 %}· <strong>שנתיים</strong>
+                {% elif yc <= 10 %}· <strong>{{ yc }} שנים</strong>
+                {% else %}· <strong>{{ yc }} שנה</strong>
                 {% endif %}
               {% endif %}
             </div>
             {% if p.notes %}<div class="small text-muted">{{ p.notes }}</div>{% endif %}
           </div>
-          <button class="btn btn-sm btn-outline-secondary flex-shrink-0" onclick="checkToday(event)"
-                  title="שלח התראת וואטסאפ">
-            <i class="bi bi-whatsapp"></i>
-          </button>
         </div>
       {% endfor %}
     </div>
@@ -203,9 +206,10 @@
                   <div class="small text-muted">
                     {{ p.event_type or 'יום הולדת' }}
                     {% if p.years_count is not none and p.years_count >= 1 %}
-                      {% if p.years_count == 1 %}· <strong>שנה אחד</strong>
+                      {% if p.years_count == 1 %}· <strong>שנה אחת</strong>
                       {% elif p.years_count == 2 %}· <strong>שנתיים</strong>
-                      {% else %}· <strong>{{ p.years_count }} שנים</strong>
+                      {% elif p.years_count <= 10 %}· <strong>{{ p.years_count }} שנים</strong>
+                      {% else %}· <strong>{{ p.years_count }} שנה</strong>
                       {% endif %}
                     {% elif p.years_count is none %}
                       · <a href="/edit/{{ p.id }}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠</a>
@@ -463,6 +467,43 @@ window.addEventListener('DOMContentLoaded', () => {
   onYearChange('addYear', 'addMonth', 'addDay');
 });
 
+async function shareTodayCard() {
+  const btn = event.currentTarget;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  btn.disabled = true;
+  try {
+    const card = document.querySelector('.birthday-today-card');
+    const canvas = await html2canvas(card, {
+      scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollY: -window.scrollY,
+    });
+    canvas.toBlob(async (blob) => {
+      const file = new File([blob], 'today-events.png', { type: 'image/png' });
+      try {
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: 'אנחנו מציינים היום' });
+        } else {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'today-events.png';
+          a.click();
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'today-events.png';
+          a.click();
+        }
+      }
+      btn.innerHTML = orig; btn.disabled = false;
+    }, 'image/png');
+  } catch (err) {
+    console.error('Today card capture failed:', err);
+    btn.innerHTML = orig; btn.disabled = false;
+  }
+}
+
 async function shareUpcomingAsImage() {
   const btn = document.getElementById('sendUpcomingBtn');
   const orig = btn.innerHTML;
@@ -582,11 +623,13 @@ async function onFilterChange() {
       const icon = EVENT_ICONS[p.event_type] || '📌';
       let yearsHtml = '';
       if (p.years_count === 1) {
-        yearsHtml = `· <strong>שנה אחד</strong>`;
+        yearsHtml = `· <strong>שנה אחת</strong>`;
       } else if (p.years_count === 2) {
         yearsHtml = `· <strong>שנתיים</strong>`;
-      } else if (p.years_count > 2) {
+      } else if (p.years_count > 2 && p.years_count <= 10) {
         yearsHtml = `· <strong>${p.years_count} שנים</strong>`;
+      } else if (p.years_count > 10) {
+        yearsHtml = `· <strong>${p.years_count} שנה</strong>`;
       } else if (p.years_count === null || p.years_count === undefined) {
         yearsHtml = `· <a href="/edit/${p.id}" class="text-warning text-decoration-none" title="הוסף שנה כדי לחשב">⚠</a>`;
       }

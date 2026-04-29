@@ -269,8 +269,8 @@ def int_to_hebrew_numeral(n: int, geresh: bool = True) -> str:
 
 
 def format_hebrew_date_he(day: int, month: int, year: int) -> str:
-    """Return a fully Hebrew-lettered date, e.g. כ״ח אייר תשפ״ו"""
-    return f"{int_to_hebrew_numeral(day, geresh=False)} {HEBREW_MONTHS_HE[month]} {int_to_hebrew_numeral(year)}"
+    """Return a fully Hebrew-lettered date, e.g. יב באייר תשפ״ו"""
+    return f"{int_to_hebrew_numeral(day, geresh=False)} ב{HEBREW_MONTHS_HE[month]} {int_to_hebrew_numeral(year)}"
 
 
 def compute_days_until(hday: int, hmonth: int) -> int:
