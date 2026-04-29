@@ -718,7 +718,7 @@ def admin_users_delete(uid):
 @login_required
 def index():
     hyear, hmonth, hday = today_hebrew()
-    today_str = format_hebrew_date(hday, hmonth, hyear)
+    today_str = format_hebrew_date_he(hday, hmonth, hyear)
 
     conn = get_db()
     rows = conn.execute("SELECT * FROM people").fetchall()

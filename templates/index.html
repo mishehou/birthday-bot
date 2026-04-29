@@ -10,21 +10,78 @@
   <link rel="apple-touch-icon" href="/icon.svg">
   <link rel="manifest" href="/manifest.json">
   <style>
-    body { background: #f8f9fa; }
-    .card { border-radius: 12px; }
-    .birthday-today-header { background: #495057; color: #fff; }
-    .birthday-today-body { background: #fff3cd; }
-    .birthday-today-card { border: 3px solid #495057; box-shadow: 0 4px 16px rgba(0,0,0,0.18) !important; }
-    .upcoming-soon { background: #d1ecf1; border-left: 4px solid #17a2b8; }
+    :root {
+      --sl-900: #1e2a32;
+      --sl-800: #263238;
+      --sl-700: #37474f;
+      --sl-600: #455a64;
+      --sl-500: #546e7a;
+      --sl-400: #78909c;
+      --sl-300: #b0bec5;
+      --sl-200: #cfd8dc;
+      --sl-100: #eceff1;
+      --sl-50:  #f5f7f9;
+      --gold:   #dba10a;
+      --gold-bg:#fff8e1;
+    }
+
+    body { background: var(--sl-50); color: var(--sl-800); }
+
+    /* Cards */
+    .card { border-radius: 12px; border-color: var(--sl-200); }
+    .card-footer { background-color: var(--sl-50) !important; border-top-color: var(--sl-200); }
+
+    /* Today's events card — structured with slate header */
+    .birthday-today-header { background: var(--sl-700); color: #fff; }
+    .birthday-today-body   { background: var(--gold-bg); }
+    .birthday-today-card   { border: 3px solid var(--sl-700); box-shadow: 0 4px 16px rgba(0,0,0,0.14) !important; }
+
+    /* Upcoming list items */
+    .upcoming-soon { background: #fff; border-left: 4px solid var(--sl-300); }
+
+    /* Month badge (people list) */
     .month-badge {
       font-size: 0.75rem; font-weight: 600;
       padding: 2px 8px; border-radius: 20px;
-      background: #e9ecef; color: #495057;
+      background: var(--sl-100); color: var(--sl-600);
     }
+
+    /* People list interactions */
     .people-item { cursor: pointer; transition: background .12s; }
-    .people-item:hover:not(.people-selected) { background: #f8f9fa; }
-    .people-selected { background: #e7f3ff !important; border-inline-start: 3px solid #0d6efd; }
+    .people-item:hover:not(.people-selected) { background: var(--sl-100); }
+    .people-selected { background: var(--sl-100) !important; border-inline-start: 3px solid var(--sl-500); }
     .people-item:last-child { border-bottom: none !important; }
+
+    /* Unified card headers — all slate instead of teal/grey/blue */
+    .card-header.bg-info,
+    .card-header.bg-secondary { background-color: var(--sl-700) !important; }
+    .modal-header.bg-primary   { background-color: var(--sl-700) !important; }
+
+    /* Navbar */
+    .navbar.bg-dark { background-color: var(--sl-800) !important; }
+
+    /* Badges */
+    .badge.bg-warning { background-color: var(--gold)   !important; color: var(--sl-900) !important; }
+    .badge.bg-info    { background-color: var(--sl-400) !important; color: #fff          !important; }
+    .badge.bg-primary { background-color: var(--sl-500) !important; }
+    .badge.bg-danger  { background-color: var(--sl-300) !important; color: var(--sl-800) !important; }
+    .badge.bg-light   { background-color: var(--sl-100) !important; color: var(--sl-700) !important; border-color: var(--sl-200) !important; }
+
+    /* Buttons */
+    .btn-success               { background-color: var(--sl-600) !important; border-color: var(--sl-600) !important; }
+    .btn-success:hover         { background-color: var(--sl-700) !important; border-color: var(--sl-700) !important; }
+    .btn-outline-secondary     { border-color: var(--sl-400) !important; color: var(--sl-500) !important; }
+    .btn-outline-secondary:hover { background-color: var(--sl-100) !important; color: var(--sl-600) !important; border-color: var(--sl-400) !important; }
+
+    /* Focus rings */
+    .form-select:focus, .form-control:focus {
+      border-color: var(--sl-400);
+      box-shadow: 0 0 0 .2rem rgba(84,110,122,.2);
+    }
+
+    /* Warning links (missing year ⚠) */
+    a.text-warning { color: var(--gold) !important; }
+
     @media (max-width: 767.98px) {
       #peopleSearch { width: 110px !important; }
     }
@@ -35,13 +92,13 @@
   <div class="container">
     <span class="navbar-brand"><i class="bi bi-cake2"></i> ציון תאריכים לפי תאריך עברי</span>
     <div class="d-flex align-items-center gap-2">
-      <span class="text-light small d-none d-md-inline">Today: {{ today_str }}</span>
+      <span class="text-light small d-none d-md-inline">היום: {{ today_str }}</span>
       {% if session.user_role == 'administrator' %}
       <a href="/admin/users" class="btn btn-sm btn-outline-light">
         <i class="bi bi-shield-lock"></i>
       </a>
       <a href="/admin/contacts" class="btn btn-sm btn-outline-light">
-        <i class="bi bi-person-lines-fill"></i> Contacts
+        <i class="bi bi-person-lines-fill"></i>
       </a>
       {% endif %}
       <a href="/whatsapp-setup" class="btn btn-sm btn-outline-light">
@@ -80,7 +137,7 @@
     <div class="card-body birthday-today-body py-2">
       {% for p in todays_birthdays %}
         {% set etype = p.event_type or 'יום הולדת' %}
-        <div class="d-flex align-items-center gap-2 py-1 {% if not loop.last %}border-bottom border-warning{% endif %}" dir="rtl">
+        <div class="d-flex align-items-center gap-2 py-1 {% if not loop.last %}border-bottom{% endif %}" dir="rtl">
           <span style="font-size:1.4rem;line-height:1;flex-shrink:0">{{ _icons.get(etype, '📌') }}</span>
           <div class="flex-grow-1">
             <div><strong>{{ p.first_name }} {{ p.last_name or '' }}</strong></div>
@@ -98,7 +155,7 @@
             {% if p.notes %}<div class="small text-muted">{{ p.notes }}</div>{% endif %}
           </div>
           <button class="btn btn-sm btn-warning flex-shrink-0" onclick="checkToday(event)"
-                  title="Send WhatsApp notification now">
+                  title="שלח התראת וואטסאפ">
             <i class="bi bi-whatsapp"></i>
           </button>
         </div>
@@ -164,7 +221,7 @@
                 {% if p.days_until == 0 %}
                   <span class="badge bg-warning text-dark flex-shrink-0">היום!</span>
                 {% else %}
-                  <span class="badge bg-info text-dark flex-shrink-0">{{ p.days_until }}d</span>
+                  <span class="badge bg-info text-dark flex-shrink-0">{{ p.days_until }}י</span>
                 {% endif %}
               </div>
             </li>
@@ -180,7 +237,7 @@
     <div id="peopleCol" class="col-lg-7 d-none">
       <div class="card shadow-sm">
         <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center flex-wrap gap-2">
-          <span><i class="bi bi-people-fill"></i> All People ({{ people | length }})</span>
+          <span><i class="bi bi-people-fill"></i> כל האנשים ({{ people | length }})</span>
           <div class="d-flex gap-2 align-items-center">
             <input id="peopleSearch" type="text" class="form-control form-control-sm"
                    style="width:150px" placeholder="חיפוש שם…" oninput="filterPeople()">
@@ -188,7 +245,7 @@
               <i class="bi bi-x-lg"></i>
             </button>
             <button class="btn btn-sm btn-light d-none d-md-inline-flex" id="checkBtn" onclick="checkToday(event)">
-              <i class="bi bi-send-check"></i> Test today's check
+              <i class="bi bi-send-check"></i> בדיקת היום
             </button>
           </div>
         </div>
@@ -204,33 +261,33 @@
             <div class="d-flex justify-content-between align-items-center">
               <span>
                 <strong>{{ p.first_name }}</strong>{% if p.last_name %} {{ p.last_name }}{% endif %}
-                {% if p.gender == 'M' %}<span class="badge bg-primary ms-1" style="font-size:.6rem;vertical-align:middle">M</span>
-                {% elif p.gender == 'F' %}<span class="badge bg-danger ms-1" style="font-size:.6rem;vertical-align:middle">F</span>{% endif %}
+                {% if p.gender == 'M' %}<span class="badge bg-primary ms-1" style="font-size:.6rem;vertical-align:middle">ז</span>
+                {% elif p.gender == 'F' %}<span class="badge bg-danger ms-1" style="font-size:.6rem;vertical-align:middle">נ</span>{% endif %}
               </span>
               <span class="d-flex align-items-center gap-2">
-                <span class="month-badge">{{ hebrew_months[p.hebrew_month] }} {{ p.hebrew_day }}</span>
+                <span class="month-badge">{{ hebrew_months_he[p.hebrew_month] }} {{ p.hebrew_day }}</span>
                 {% set d = p.days_until %}
-                {% if d == 0 %}<span class="badge bg-warning text-dark">Today!</span>
-                {% else %}<span class="badge bg-light text-dark border">{{ d }}d</span>{% endif %}
+                {% if d == 0 %}<span class="badge bg-warning text-dark">היום!</span>
+                {% else %}<span class="badge bg-light text-dark border">{{ d }}י</span>{% endif %}
               </span>
             </div>
           </div>
           {% endfor %}
         </div>
         <div class="card-footer d-flex align-items-center justify-content-between py-2 bg-light">
-          <span id="selectedName" class="small text-muted fst-italic">— select a person —</span>
+          <span id="selectedName" class="small text-muted fst-italic">— בחר אדם —</span>
           {% if session.user_role in ('administrator', 'editor') %}
           <div class="d-flex gap-2">
             <button type="button" class="btn btn-sm btn-success"
                     data-bs-toggle="modal" data-bs-target="#addPersonModal">
-              <i class="bi bi-plus-circle"></i> Add New
+              <i class="bi bi-plus-circle"></i> הוסף
             </button>
             <a id="editBtn" href="#" class="btn btn-sm btn-outline-secondary disabled">
-              <i class="bi bi-pencil"></i> Edit
+              <i class="bi bi-pencil"></i> עריכה
             </a>
             <button id="deleteBtn" type="button" class="btn btn-sm btn-outline-danger disabled"
                     onclick="deletePerson()">
-              <i class="bi bi-trash"></i> Delete
+              <i class="bi bi-trash"></i> מחיקה
             </button>
           </div>
           {% endif %}
@@ -239,7 +296,7 @@
         {% else %}
         <div class="card-body text-center text-muted py-5">
           <i class="bi bi-person-x" style="font-size:2rem"></i>
-          <p class="mt-2">No people added yet. Add someone above!</p>
+          <p class="mt-2">טרם נוספו אנשים. הוסף מישהו!</p>
         </div>
         {% endif %}
       </div>
@@ -254,44 +311,44 @@
   <div class="modal-dialog">
     <div class="modal-content">
       <div class="modal-header bg-primary text-white">
-        <h5 class="modal-title"><i class="bi bi-person-plus-fill"></i> Add Person</h5>
+        <h5 class="modal-title"><i class="bi bi-person-plus-fill"></i> הוספת אדם</h5>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
         <form method="post" action="/add" id="addForm">
           <div class="row g-2 mb-3">
             <div class="col">
-              <label class="form-label">First Name <span class="text-danger">*</span></label>
+              <label class="form-label">שם פרטי <span class="text-danger">*</span></label>
               <input type="text" class="form-control" name="first_name"
-                     placeholder="e.g. Avraham" required>
+                     placeholder="למשל: אברהם" required>
             </div>
             <div class="col">
-              <label class="form-label">Last Name</label>
+              <label class="form-label">שם משפחה</label>
               <input type="text" class="form-control" name="last_name"
-                     placeholder="e.g. Cohen">
+                     placeholder="למשל: כהן">
             </div>
           </div>
           <div class="mb-2">
-            <label class="form-label">Hebrew Year <span class="text-danger">*</span></label>
+            <label class="form-label">שנה עברית <span class="text-danger">*</span></label>
             <select class="form-select" name="hebrew_year_ui" id="addYear"
                     onchange="onYearChange('addYear','addMonth','addDay')">
-              <option value="">— select year —</option>
+              <option value="">— בחר שנה —</option>
               {% for y in range(5700, 5801) %}
                 <option value="{{ y }}" {% if y == current_hebrew_year %}selected{% endif %}>{{ y }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="mb-2">
-            <label class="form-label">Hebrew Month <span class="text-danger">*</span></label>
+            <label class="form-label">חודש עברי <span class="text-danger">*</span></label>
             <select class="form-select" name="hebrew_month" id="addMonth"
                     onchange="buildDayOptions('addMonth','addDay')" disabled required>
-              <option value="">— select year first —</option>
+              <option value="">— בחר שנה תחילה —</option>
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Day <span class="text-danger">*</span></label>
+            <label class="form-label">יום <span class="text-danger">*</span></label>
             <select class="form-select" name="hebrew_day" id="addDay" disabled required>
-              <option value="">— select month first —</option>
+              <option value="">— בחר חודש תחילה —</option>
             </select>
           </div>
           <div class="mb-3">
@@ -304,33 +361,33 @@
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Notes <small class="text-muted">(optional)</small></label>
-            <input type="text" class="form-control" name="notes" placeholder="e.g. send flowers">
+            <label class="form-label">הערות <small class="text-muted">(אופציונלי)</small></label>
+            <input type="text" class="form-control" name="notes" placeholder="למשל: לשלוח פרחים">
           </div>
           <div class="mb-3">
-            <label class="form-label">Gender <small class="text-muted">(optional)</small></label>
+            <label class="form-label">מין <small class="text-muted">(אופציונלי)</small></label>
             <select class="form-select" name="gender">
-              <option value="">— not specified —</option>
-              <option value="M">M — Male</option>
-              <option value="F">F — Female</option>
+              <option value="">— לא צוין —</option>
+              <option value="M">ז — זכר</option>
+              <option value="F">נ — נקבה</option>
             </select>
           </div>
           <div class="mb-3">
-            <label class="form-label">Group <small class="text-muted">(optional)</small></label>
+            <label class="form-label">קבוצה <small class="text-muted">(אופציונלי)</small></label>
             <select class="form-select" name="group_type">
-              <option value="">— not specified —</option>
-              <option value="close_family">Close Family</option>
-              <option value="other">Other</option>
+              <option value="">— לא צוין —</option>
+              <option value="close_family">משפחה קרובה</option>
+              <option value="other">אחר</option>
             </select>
           </div>
           <button type="submit" class="btn btn-primary w-100">
-            <i class="bi bi-plus-circle"></i> Add
+            <i class="bi bi-plus-circle"></i> הוספה
           </button>
         </form>
         <div class="mt-3 p-2 bg-light rounded small text-muted">
           <i class="bi bi-info-circle"></i>
-          <strong>Adar note:</strong> If born in a non-leap year choose <em>Adar</em>.
-          The bot will automatically celebrate on Adar II during leap years.
+          <strong>הערת אדר:</strong> אם נולד בשנה לא מעוברת, בחר <em>אדר</em>.
+          המערכת תחגוג אוטומטית באדר ב׳ בשנים מעוברות.
         </div>
       </div>
     </div>
@@ -349,9 +406,9 @@ async function onYearChange(yearSelectId, monthSelectId, daySelectId) {
   const monthEl = document.getElementById(monthSelectId);
   const dayEl   = document.getElementById(daySelectId);
 
-  monthEl.innerHTML = '<option value="">— select month —</option>';
+  monthEl.innerHTML = '<option value="">— בחר חודש —</option>';
   monthEl.disabled = true;
-  dayEl.innerHTML   = '<option value="">— select month first —</option>';
+  dayEl.innerHTML   = '<option value="">— בחר חודש תחילה —</option>';
   dayEl.disabled    = true;
   addYearData = null;
 
@@ -382,7 +439,7 @@ function buildDayOptions(monthSelectId, daySelectId, preselect) {
 
   if (!month || !addYearData) {
     dayEl.disabled = true;
-    dayEl.innerHTML = '<option value="">— select month first —</option>';
+    dayEl.innerHTML = '<option value="">— בחר חודש תחילה —</option>';
     return;
   }
 
@@ -391,7 +448,7 @@ function buildDayOptions(monthSelectId, daySelectId, preselect) {
 
   dayEl.disabled = false;
   const blank = document.createElement('option');
-  blank.value = ''; blank.textContent = '— day —';
+  blank.value = ''; blank.textContent = '— יום —';
   if (!preselect) blank.selected = true;
   dayEl.appendChild(blank);
 
@@ -478,7 +535,7 @@ function selectPerson(el) {
 
 function deletePerson() {
   const name = document.getElementById('selectedName').textContent;
-  if (confirm('Delete ' + name + '?')) {
+  if (confirm('למחוק את ' + name + '?')) {
     document.getElementById('deleteForm').submit();
   }
 }
@@ -537,7 +594,7 @@ async function onFilterChange() {
       }
       const badge = p.days_until === 0
         ? `<span class="badge bg-warning text-dark flex-shrink-0">היום!</span>`
-        : `<span class="badge bg-info text-dark flex-shrink-0">${p.days_until}d</span>`;
+        : `<span class="badge bg-info text-dark flex-shrink-0">${p.days_until}י</span>`;
       return `<li class="list-group-item upcoming-soon py-2">
         <div class="d-flex align-items-center gap-2">
           <span style="font-size:1.3rem;line-height:1;flex-shrink:0">${icon}</span>
@@ -562,19 +619,19 @@ async function checkToday(e) {
   e.preventDefault();
   const btn = document.getElementById('checkBtn');
   const origHtml = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Checking…';
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> בודק…';
   btn.disabled = true;
   try {
     const res  = await fetch('/api/check-today');
     const data = await res.json();
     const names = data.birthdays.map(p => p.name);
     if (names.length) {
-      alert('Birthdays found — WhatsApp notifications sent:\n' + names.join(', '));
+      alert('נמצאו אירועים — הודעות נשלחו:\n' + names.join(', '));
     } else {
-      alert('No birthdays today (' + data.date + ').');
+      alert('אין אירועים היום (' + data.date + ').');
     }
   } catch (err) {
-    alert('Error checking birthdays.');
+    alert('שגיאה בבדיקת האירועים.');
   } finally {
     btn.innerHTML = origHtml;
     btn.disabled = false;
